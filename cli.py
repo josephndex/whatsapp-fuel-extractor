@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-WhatsApp Fuel Extractor - Advanced CLI
+WhatsApp Fuel Extractor - Interactive CLI
 
 A unified command-line interface for managing the WhatsApp Fuel Extractor.
-Replaces all .sh and .bat files with a single, cross-platform tool.
+Run without arguments for interactive menu, or use command-line options.
 
 Usage:
-    python cli.py <command> [options]
+    python cli.py              # Interactive menu
+    python cli.py <command>    # Direct command
     
 Commands:
     listen      Start the WhatsApp listener (Node.js)
@@ -15,7 +16,7 @@ Commands:
     summary     Generate fuel summary reports
     reset       Reset all data (local, database, sheets)
     status      Show system status
-    help        Show this help message
+    web         Start the web dashboard
 """
 
 import argparse
@@ -41,10 +42,31 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
+# Try to import questionary for interactive menu
+try:
+    import questionary
+    from questionary import Style
+    QUESTIONARY_AVAILABLE = True
+except ImportError:
+    QUESTIONARY_AVAILABLE = False
+
 # Project root directory
 ROOT_DIR = Path(__file__).parent.absolute()
 CONFIG_PATH = ROOT_DIR / 'config.json'
 DATA_DIR = ROOT_DIR / 'data'
+
+# Custom style for questionary
+if QUESTIONARY_AVAILABLE:
+    custom_style = Style([
+        ('qmark', 'fg:green bold'),
+        ('question', 'fg:white bold'),
+        ('answer', 'fg:cyan bold'),
+        ('pointer', 'fg:cyan bold'),
+        ('highlighted', 'fg:cyan bold'),
+        ('selected', 'fg:green'),
+        ('separator', 'fg:gray'),
+        ('instruction', 'fg:gray italic'),
+    ])
 
 
 class Console:
@@ -407,12 +429,159 @@ def print_banner():
         print(banner)
 
 
+def interactive_menu():
+    """Show interactive menu for selecting commands"""
+    if not QUESTIONARY_AVAILABLE:
+        console.print("[yellow]Interactive menu requires 'questionary' package.[/yellow]")
+        console.print("[dim]Install with: pip install questionary[/dim]")
+        console.print("[dim]Or use: python cli.py <command>[/dim]")
+        return None
+    
+    print_banner()
+    
+    menu_choices = [
+        questionary.Choice("📱 Start WhatsApp Listener", value="listen"),
+        questionary.Choice("⚙️  Start Fuel Processor", value="process"),
+        questionary.Choice("🔄 Process Messages Once", value="once"),
+        questionary.Separator(),
+        questionary.Choice("📊 Generate Summary Report", value="summary_menu"),
+        questionary.Choice("🌐 Open Web Dashboard", value="web"),
+        questionary.Choice("📋 Show System Status", value="status"),
+        questionary.Separator(),
+        questionary.Choice("🗑️  Reset All Data", value="reset"),
+        questionary.Choice("❌ Exit", value="exit"),
+    ]
+    
+    choice = questionary.select(
+        "What would you like to do?",
+        choices=menu_choices,
+        style=custom_style,
+        instruction="(Use ↑↓ arrows to navigate, Enter to select)"
+    ).ask()
+    
+    if choice == "exit" or choice is None:
+        console.print("\n[dim]Goodbye! 👋[/dim]")
+        return None
+    
+    if choice == "summary_menu":
+        return interactive_summary_menu()
+    
+    return choice
+
+
+def interactive_summary_menu():
+    """Show submenu for summary options"""
+    summary_choices = [
+        questionary.Choice("📅 Daily Summary (Today)", value=("summary", "daily")),
+        questionary.Choice("📆 Weekly Summary (Last 7 days)", value=("summary", "weekly")),
+        questionary.Choice("📊 Monthly Summary (Last 30 days)", value=("summary", "monthly")),
+        questionary.Separator(),
+        questionary.Choice("🚗 Vehicle-Specific Summary", value=("summary", "car")),
+        questionary.Separator(),
+        questionary.Choice("⬅️  Back to Main Menu", value="back"),
+    ]
+    
+    choice = questionary.select(
+        "Select summary type:",
+        choices=summary_choices,
+        style=custom_style,
+        instruction="(Use ↑↓ arrows to navigate, Enter to select)"
+    ).ask()
+    
+    if choice == "back" or choice is None:
+        return interactive_menu()
+    
+    return choice
+
+
+def interactive_web_port():
+    """Ask for web dashboard port"""
+    port = questionary.text(
+        "Enter port number:",
+        default="8080",
+        style=custom_style,
+        validate=lambda x: x.isdigit() and 1 <= int(x) <= 65535
+    ).ask()
+    
+    return int(port) if port else 8080
+
+
+def run_interactive():
+    """Run the interactive CLI"""
+    while True:
+        result = interactive_menu()
+        
+        if result is None:
+            return 0
+        
+        # Create args-like object
+        class Args:
+            pass
+        args = Args()
+        
+        if isinstance(result, tuple):
+            command, option = result
+            if command == "summary":
+                args.period = option if option != "car" else None
+                args.car = None
+                args.days = None
+                
+                if option == "car":
+                    car_plate = questionary.text(
+                        "Enter vehicle plate (e.g., KCA542Q):",
+                        style=custom_style
+                    ).ask()
+                    if car_plate:
+                        args.car = car_plate.upper().replace(" ", "")
+                        days = questionary.text(
+                            "Number of days to look back:",
+                            default="30",
+                            style=custom_style
+                        ).ask()
+                        args.days = int(days) if days and days.isdigit() else 30
+                    else:
+                        continue
+                
+                cmd_summary(args)
+        else:
+            if result == "listen":
+                cmd_listen(args)
+            elif result == "process":
+                cmd_process(args)
+            elif result == "once":
+                cmd_once(args)
+            elif result == "status":
+                cmd_status(args)
+            elif result == "web":
+                args.port = interactive_web_port()
+                args.host = "0.0.0.0"
+                cmd_web(args)
+            elif result == "reset":
+                args.yes = False
+                cmd_reset(args)
+        
+        # After command completes, ask if user wants to continue
+        console.print()
+        if not questionary.confirm(
+            "Return to main menu?",
+            default=True,
+            style=custom_style
+        ).ask():
+            console.print("\n[dim]Goodbye! 👋[/dim]")
+            return 0
+
+
 def main():
+    # If no arguments provided, show interactive menu
+    if len(sys.argv) == 1 and QUESTIONARY_AVAILABLE:
+        return run_interactive()
+    
     parser = argparse.ArgumentParser(
-        description='WhatsApp Fuel Extractor - Advanced CLI',
+        description='WhatsApp Fuel Extractor - Interactive CLI',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  python cli.py                     Interactive menu (recommended)
   python cli.py listen              Start WhatsApp listener
   python cli.py process             Start fuel processor
   python cli.py once                Process pending messages once

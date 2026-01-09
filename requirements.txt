@@ -6,6 +6,7 @@ schedule>=1.2.0
 
 # CLI with beautiful output
 rich>=13.0.0
+questionary>=2.0.0
 
 # Web dashboard
 fastapi>=0.104.0
