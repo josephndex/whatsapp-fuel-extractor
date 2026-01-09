@@ -1,0 +1,42 @@
+{
+  "whatsapp": {
+    "phoneNumber": "254114192225",
+    "groupName": "Fuel Reports"
+  },
+  "output": {
+    "excelFolder": "./data/output",
+    "excelFileName": "fuel_records.xlsx"
+  },
+  "schedule": {
+    "processingIntervalSeconds": 10
+  },
+  "parsing": {
+    "fuelTypes": [
+      "DIESEL",
+      "PETROL",
+      "SUPER",
+      "V-POWER",
+      "UNLEADED"
+    ],
+    "requiredFields": [
+      "driver",
+      "car",
+      "liters",
+      "amount",
+      "type",
+      "odometer"
+    ],
+    "strictMode": false
+  },
+  "upload": {
+    "toGoogleSheets": true,
+    "toDatabase": true,
+    "google": {
+      "sheetName": "SYSTEM FUEL RECORDS",
+      "spreadsheetId": "1FcXD5ILQnE4U3ljAzLW0R9LzyDZaTD21OckoJ4BtfxE"
+    },
+    "database": {
+      "tableName": "fuel_records"
+    }
+  }
+}

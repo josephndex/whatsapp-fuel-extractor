@@ -1,0 +1,20 @@
+{
+  "name": "whatsapp-fuel-extractor",
+  "version": "1.0.0",
+  "description": "Automatically extracts fueling details from WhatsApp group messages and saves to Excel",
+  "main": "node/listener.js",
+  "scripts": {
+    "start": "node node/listener.js",
+    "dev": "node node/listener.js --dev"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode-terminal": "^0.12.0",
+    "chokidar": "^3.5.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}

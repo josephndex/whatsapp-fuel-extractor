@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Records - Fuel Extractor{% endblock %}
+
+{% block content %}
+<div class="mb-8 flex items-center justify-between">
+    <div>
+        <h1 class="text-3xl font-bold text-gray-800">Fuel Records</h1>
+        <p class="text-gray-600">{{ total }} total records</p>
+    </div>
+    
+    <!-- Search -->
+    <form method="get" class="flex gap-2">
+        <input type="text" name="search" value="{{ search }}" 
+               placeholder="Search by vehicle, driver, department..." 
+               class="px-4 py-2 border border-gray-300 rounded-lg w-80 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            <i class="fas fa-search"></i>
+        </button>
+        {% if search %}
+        <a href="/records" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">
+            Clear
+        </a>
+        {% endif %}
+    </form>
+</div>
+
+<!-- Records Table -->
+<div class="bg-white rounded-xl shadow overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date/Time</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Vehicle</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Driver</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Department</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Liters</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Odometer</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                {% for record in records %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">{{ record.datetime[:16] }}</td>
+                    <td class="px-6 py-4">
+                        <span class="font-medium text-gray-800 bg-gray-100 px-2 py-1 rounded">{{ record.car }}</span>
+                    </td>
+                    <td class="px-6 py-4 text-sm text-gray-600">{{ record.driver }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-600">{{ record.department }}</td>
+                    <td class="px-6 py-4 text-sm">
+                        <span class="px-2 py-1 rounded-full text-xs 
+                            {% if 'DIESEL' in record.type.upper() %}bg-yellow-100 text-yellow-800
+                            {% elif 'PETROL' in record.type.upper() or 'SUPER' in record.type.upper() %}bg-green-100 text-green-800
+                            {% else %}bg-gray-100 text-gray-800{% endif %}">
+                            {{ record.type }}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 text-sm text-gray-800 text-right">{{ record.liters|round(1) }} L</td>
+                    <td class="px-6 py-4 text-sm text-gray-800 text-right font-medium">KSH {{ "{:,.0f}".format(record.amount|float) }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-600 text-right">{{ "{:,}".format(record.odometer|int) }} km</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="8" class="px-6 py-12 text-center text-gray-500">
+                        <i class="fas fa-search text-4xl mb-3"></i>
+                        <p class="text-lg">No records found</p>
+                        {% if search %}
+                        <p class="text-sm">Try adjusting your search terms</p>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+        <div class="text-sm text-gray-600">
+            Page {{ page }} of {{ total_pages }}
+        </div>
+        <div class="flex gap-2">
+            {% if page > 1 %}
+            <a href="?page={{ page - 1 }}{% if search %}&search={{ search }}{% endif %}" 
+               class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                <i class="fas fa-chevron-left"></i> Previous
+            </a>
+            {% endif %}
+            {% if page < total_pages %}
+            <a href="?page={{ page + 1 }}{% if search %}&search={{ search }}{% endif %}" 
+               class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                Next <i class="fas fa-chevron-right"></i>
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

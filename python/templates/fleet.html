@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Fleet - Fuel Extractor{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-3xl font-bold text-gray-800">Fleet Vehicles</h1>
+    <p class="text-gray-600">{{ total }} registered vehicles in the fleet</p>
+</div>
+
+<div class="bg-white rounded-xl shadow p-6">
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        {% for plate in fleet %}
+        <div class="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-center hover:bg-blue-50 hover:border-blue-300 transition-colors">
+            <span class="font-mono font-medium text-gray-800">{{ plate }}</span>
+        </div>
+        {% else %}
+        <div class="col-span-full text-center py-12 text-gray-500">
+            <i class="fas fa-car text-4xl mb-3"></i>
+            <p>No vehicles registered</p>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-6">
+    <h3 class="font-semibold text-blue-800 mb-2">
+        <i class="fas fa-info-circle mr-2"></i>Managing Fleet
+    </h3>
+    <p class="text-blue-700 text-sm">
+        Use WhatsApp admin commands to manage the fleet:
+    </p>
+    <ul class="text-blue-700 text-sm mt-2 space-y-1">
+        <li><code class="bg-blue-100 px-2 py-1 rounded">!add KXX 123Y</code> - Add a vehicle</li>
+        <li><code class="bg-blue-100 px-2 py-1 rounded">!remove KXX123Y</code> - Remove a vehicle</li>
+        <li><code class="bg-blue-100 px-2 py-1 rounded">!list</code> - List all vehicles</li>
+    </ul>
+</div>
+{% endblock %}

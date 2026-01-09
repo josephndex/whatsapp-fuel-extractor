@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Fuel Extractor{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .sidebar { transition: width 0.3s; }
+        .card { transition: transform 0.2s, box-shadow 0.2s; }
+        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="flex">
+        <!-- Sidebar -->
+        <aside class="sidebar w-64 bg-gray-900 min-h-screen fixed left-0 top-0">
+            <div class="p-4 border-b border-gray-700">
+                <h1 class="text-xl font-bold text-white flex items-center gap-2">
+                    <i class="fas fa-gas-pump text-green-400"></i>
+                    Fuel Extractor
+                </h1>
+            </div>
+            <nav class="p-4">
+                <ul class="space-y-2">
+                    <li>
+                        <a href="/" class="flex items-center gap-3 px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white rounded-lg {% if request.url.path == '/' %}bg-gray-800 text-white{% endif %}">
+                            <i class="fas fa-chart-line w-5"></i>
+                            <span>Dashboard</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/records" class="flex items-center gap-3 px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white rounded-lg {% if '/records' in request.url.path %}bg-gray-800 text-white{% endif %}">
+                            <i class="fas fa-table w-5"></i>
+                            <span>Records</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/analytics" class="flex items-center gap-3 px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white rounded-lg {% if '/analytics' in request.url.path %}bg-gray-800 text-white{% endif %}">
+                            <i class="fas fa-chart-pie w-5"></i>
+                            <span>Analytics</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/approvals" class="flex items-center gap-3 px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white rounded-lg {% if '/approvals' in request.url.path %}bg-gray-800 text-white{% endif %}">
+                            <i class="fas fa-clock w-5"></i>
+                            <span>Approvals</span>
+                            {% if stats and stats.pending_approvals > 0 %}
+                            <span class="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full">{{ stats.pending_approvals }}</span>
+                            {% endif %}
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/fleet" class="flex items-center gap-3 px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white rounded-lg {% if '/fleet' in request.url.path %}bg-gray-800 text-white{% endif %}">
+                            <i class="fas fa-car w-5"></i>
+                            <span>Fleet</span>
+                        </a>
+                    </li>
+                </ul>
+            </nav>
+            <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-700">
+                <div class="text-gray-500 text-xs">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                        <span>System Online</span>
+                    </div>
+                    <div>WhatsApp Fuel Extractor v1.0</div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 ml-64 p-8">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Fuel Extractor{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-3xl font-bold text-gray-800">Dashboard</h1>
+    <p class="text-gray-600">Overview of fuel consumption and records</p>
+</div>
+
+<!-- Stats Cards -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+    <!-- Today's Stats -->
+    <div class="card bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <p class="text-gray-500 text-sm">Today's Fuel</p>
+                <p class="text-2xl font-bold text-gray-800">{{ stats.today_liters|round(1) }} L</p>
+                <p class="text-sm text-green-600">KSH {{ "{:,.0f}".format(stats.today_amount|float) }}</p>
+            </div>
+            <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-calendar-day text-blue-600 text-xl"></i>
+            </div>
+        </div>
+    </div>
+
+    <!-- This Week -->
+    <div class="card bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <p class="text-gray-500 text-sm">This Week</p>
+                <p class="text-2xl font-bold text-gray-800">{{ stats.week_liters|round(1) }} L</p>
+                <p class="text-sm text-green-600">KSH {{ "{:,.0f}".format(stats.week_amount|float) }}</p>
+            </div>
+            <div class="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-chart-bar text-green-600 text-xl"></i>
+            </div>
+        </div>
+    </div>
+
+    <!-- Total Records -->
+    <div class="card bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <p class="text-gray-500 text-sm">Total Records</p>
+                <p class="text-2xl font-bold text-gray-800">{{ stats.total_records }}</p>
+                <p class="text-sm text-gray-500">{{ stats.unique_vehicles }} vehicles</p>
+            </div>
+            <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-database text-purple-600 text-xl"></i>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pending Approvals -->
+    <div class="card bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <p class="text-gray-500 text-sm">Pending Approvals</p>
+                <p class="text-2xl font-bold {% if stats.pending_approvals > 0 %}text-orange-600{% else %}text-gray-800{% endif %}">{{ stats.pending_approvals }}</p>
+                <a href="/approvals" class="text-sm text-blue-600 hover:underline">View all →</a>
+            </div>
+            <div class="w-12 h-12 {% if stats.pending_approvals > 0 %}bg-orange-100{% else %}bg-gray-100{% endif %} rounded-full flex items-center justify-center">
+                <i class="fas fa-clock {% if stats.pending_approvals > 0 %}text-orange-600{% else %}text-gray-600{% endif %} text-xl"></i>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <!-- Daily Consumption Chart -->
+    <div class="bg-white rounded-xl shadow p-6">
+        <h3 class="text-lg font-semibold text-gray-800 mb-4">Daily Fuel Consumption (Last 7 Days)</h3>
+        <canvas id="dailyChart" height="200"></canvas>
+    </div>
+
+    <!-- By Department Chart -->
+    <div class="bg-white rounded-xl shadow p-6">
+        <h3 class="text-lg font-semibold text-gray-800 mb-4">Spending by Department</h3>
+        <canvas id="departmentChart" height="200"></canvas>
+    </div>
+</div>
+
+<!-- Recent Records -->
+<div class="bg-white rounded-xl shadow">
+    <div class="p-6 border-b border-gray-200 flex items-center justify-between">
+        <h3 class="text-lg font-semibold text-gray-800">Recent Records</h3>
+        <a href="/records" class="text-blue-600 hover:underline text-sm">View all →</a>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="w-full">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date/Time</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Vehicle</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Driver</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Department</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Liters</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                {% for record in recent_records %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4 text-sm text-gray-600">{{ record.datetime[:16] }}</td>
+                    <td class="px-6 py-4">
+                        <span class="font-medium text-gray-800">{{ record.car }}</span>
+                    </td>
+                    <td class="px-6 py-4 text-sm text-gray-600">{{ record.driver }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-600">{{ record.department }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-800 text-right">{{ record.liters|round(1) }} L</td>
+                    <td class="px-6 py-4 text-sm text-gray-800 text-right">KSH {{ "{:,.0f}".format(record.amount|float) }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="px-6 py-8 text-center text-gray-500">
+                        <i class="fas fa-inbox text-4xl mb-2"></i>
+                        <p>No records yet</p>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const chartData = {{ chart_data | safe }};
+    
+    // Daily consumption chart
+    new Chart(document.getElementById('dailyChart'), {
+        type: 'bar',
+        data: {
+            labels: chartData.daily.labels.map(d => d.slice(5)),
+            datasets: [{
+                label: 'Liters',
+                data: chartData.daily.liters,
+                backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                borderRadius: 4,
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, title: { display: true, text: 'Liters' } }
+            }
+        }
+    });
+    
+    // Department chart
+    new Chart(document.getElementById('departmentChart'), {
+        type: 'doughnut',
+        data: {
+            labels: chartData.by_department.labels,
+            datasets: [{
+                data: chartData.by_department.values,
+                backgroundColor: [
+                    '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
+                    '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1'
+                ],
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { position: 'right' }
+            }
+        }
+    });
+</script>
+{% endblock %}
