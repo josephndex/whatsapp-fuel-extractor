@@ -9,16 +9,95 @@ Features:
 - Charts and analytics
 - Pending approvals management
 - Fleet management
+- Real-time updates via Server-Sent Events (SSE)
 """
 
+import asyncio
+import fcntl
+import io
 import json
 import os
+import socket
+import sys
+import traceback
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
+from dateutil import parser as date_parser
+
+
+# Thread-safe file operations
+@contextmanager
+def file_lock(filepath: Path, mode: str = 'r'):
+    """Context manager for thread-safe file access with locking"""
+    f = None
+    try:
+        f = open(filepath, mode)
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX if 'w' in mode else fcntl.LOCK_SH)
+        yield f
+    finally:
+        if f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            f.close()
+
+
+def safe_json_load(filepath: Path, default: Any = None) -> Any:
+    """Safely load JSON with error handling and locking"""
+    if not filepath.exists():
+        return default if default is not None else {}
+    try:
+        with file_lock(filepath, 'r') as f:
+            content = f.read()
+            if not content.strip():
+                return default if default is not None else {}
+            return json.loads(content)
+    except json.JSONDecodeError as e:
+        print(f"JSON decode error in {filepath}: {e}")
+        # Try to recover by creating backup and returning default
+        backup_path = filepath.with_suffix('.json.bak')
+        try:
+            import shutil
+            shutil.copy2(filepath, backup_path)
+            print(f"Created backup at {backup_path}")
+        except:
+            pass
+        return default if default is not None else {}
+    except Exception as e:
+        print(f"Error loading {filepath}: {e}")
+        return default if default is not None else {}
+
+
+def safe_json_save(filepath: Path, data: Any, indent: int = 2) -> bool:
+    """Safely save JSON with atomic write and locking"""
+    temp_path = filepath.with_suffix('.json.tmp')
+    try:
+        # Write to temp file first (atomic write pattern)
+        with open(temp_path, 'w') as f:
+            json.dump(data, f, indent=indent, default=str)
+        # Rename temp to actual (atomic on most filesystems)
+        temp_path.rename(filepath)
+        return True
+    except Exception as e:
+        print(f"Error saving {filepath}: {e}")
+        # Clean up temp file if exists
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except:
+                pass
+        return False
+
+# Fix Windows console encoding for emoji output
+if sys.platform == 'win32':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except:
+        pass  # Already wrapped or not a TTY
 
 from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -45,7 +124,7 @@ TEMPLATES_DIR = Path(__file__).parent / 'templates'
 STATIC_DIR = Path(__file__).parent / 'static'
 
 # Load environment
-load_env(ROOT_DIR / '.env')
+load_env(str(ROOT_DIR / '.env'))
 
 # Create FastAPI app
 app = FastAPI(
@@ -53,6 +132,58 @@ app = FastAPI(
     description="Web dashboard for WhatsApp Fuel Extractor",
     version="1.0.0"
 )
+
+
+# Global exception handler
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Handle HTTP exceptions gracefully"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": str(exc.detail), "status_code": exc.status_code}
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors gracefully"""
+    return JSONResponse(
+        status_code=422,
+        content={"error": "Validation error", "details": str(exc)}
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all exception handler to prevent crashes"""
+    error_id = datetime.now().strftime('%Y%m%d%H%M%S')
+    print(f"[ERROR {error_id}] Unhandled exception: {exc}")
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "error_id": error_id,
+            "message": "An unexpected error occurred. Please try again."
+        }
+    )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize resources on startup"""
+    print("[START] Starting Fuel Extractor Dashboard...")
+    # Ensure data directories exist
+    for dir_path in [DATA_DIR, DATA_DIR / 'raw_messages', DATA_DIR / 'processed', DATA_DIR / 'errors', DATA_DIR / 'output']:
+        dir_path.mkdir(parents=True, exist_ok=True)
+    print("[OK] Data directories verified")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    print("[STOP] Shutting down Fuel Extractor Dashboard...")
 
 # Mount static files
 if STATIC_DIR.exists():
@@ -63,11 +194,8 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def load_config() -> dict:
-    """Load configuration"""
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, 'r') as f:
-            return json.load(f)
-    return {}
+    """Load configuration with error handling"""
+    return safe_json_load(CONFIG_PATH, {})
 
 
 def get_excel_path() -> Path:
@@ -78,21 +206,100 @@ def get_excel_path() -> Path:
     return ROOT_DIR / folder / filename
 
 
+def parse_datetime_robust(dt_str) -> Optional[datetime]:
+    """Parse datetime string robustly, handling various formats"""
+    if dt_str is None:
+        return None
+    
+    # Check for pandas NaT/NA
+    if PANDAS_AVAILABLE:
+        try:
+            if pd.isna(dt_str):
+                return None
+        except:
+            pass
+    
+    try:
+        # Handle pandas Timestamp
+        if hasattr(dt_str, 'to_pydatetime'):
+            dt = dt_str.to_pydatetime()
+            # Remove timezone info to avoid offset issues
+            if dt.tzinfo:
+                return dt.replace(tzinfo=None)
+            return dt
+        
+        # Handle datetime objects
+        if isinstance(dt_str, datetime):
+            if dt_str.tzinfo:
+                return dt_str.replace(tzinfo=None)
+            return dt_str
+        
+        # Convert to string for parsing
+        dt_string = str(dt_str).strip()
+        
+        # Try parsing with dateutil (most flexible)
+        try:
+            parsed = date_parser.parse(dt_string, fuzzy=True)
+            # Remove timezone to avoid offset issues
+            if parsed.tzinfo:
+                return parsed.replace(tzinfo=None)
+            return parsed
+        except:
+            pass
+        
+        # Fallback: try common formats manually
+        formats = [
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%d %H:%M:%S.%f',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S.%f',
+            '%Y-%m-%dT%H:%M:%SZ',
+            '%Y-%m-%dT%H:%M:%S.%fZ',
+            '%d/%m/%Y %H:%M:%S',
+            '%d-%m-%Y %H:%M:%S',
+        ]
+        
+        for fmt in formats:
+            try:
+                return datetime.strptime(dt_string.replace('Z', ''), fmt.replace('Z', ''))
+            except:
+                continue
+        
+        return None
+    except Exception as e:
+        return None
+
+
 def load_records(days: int = 30) -> List[Dict]:
-    """Load fuel records from Excel"""
+    """Load fuel records from Excel with comprehensive error handling"""
     records = []
     excel_path = get_excel_path()
     
     if not excel_path.exists():
         return records
     
+    if not PANDAS_AVAILABLE:
+        print("Warning: pandas not available, cannot load Excel records")
+        return records
+    
     try:
+        # Check file size to prevent memory issues
+        file_size = excel_path.stat().st_size
+        if file_size > 50 * 1024 * 1024:  # 50MB limit
+            print(f"Warning: Excel file is large ({file_size / 1024 / 1024:.1f}MB), loading may be slow")
+        
         df = pd.read_excel(excel_path)
         
         # Convert to list of dicts
         for _, row in df.iterrows():
+            # Parse datetime robustly
+            dt_val = row.get('DATETIME', '')
+            parsed_dt = parse_datetime_robust(dt_val)
+            dt_str = parsed_dt.isoformat() if parsed_dt else str(dt_val)
+            
             record = {
-                'datetime': str(row.get('DATETIME', '')),
+                'datetime': dt_str,
+                'datetime_obj': parsed_dt,
                 'department': str(row.get('DEPARTMENT', '')),
                 'driver': str(row.get('DRIVER', '')),
                 'car': str(row.get('CAR', '')),
@@ -104,7 +311,7 @@ def load_records(days: int = 30) -> List[Dict]:
             records.append(record)
         
         # Sort by datetime descending
-        records.sort(key=lambda x: x['datetime'], reverse=True)
+        records.sort(key=lambda x: x['datetime_obj'] or datetime.min, reverse=True)
         
     except Exception as e:
         print(f"Error loading records: {e}")
@@ -113,16 +320,12 @@ def load_records(days: int = 30) -> List[Dict]:
 
 
 def load_pending_approvals() -> List[Dict]:
-    """Load pending approvals"""
+    """Load pending approvals with safe JSON loading"""
     path = DATA_DIR / 'pending_approvals.json'
-    if path.exists():
-        try:
-            with open(path, 'r') as f:
-                approvals = json.load(f)
-                return [a for a in approvals if a.get('status') == 'pending']
-        except:
-            pass
-    return []
+    approvals = safe_json_load(path, [])
+    if not isinstance(approvals, list):
+        return []
+    return [a for a in approvals if isinstance(a, dict) and a.get('status') == 'pending']
 
 
 def load_fleet() -> List[str]:
@@ -135,9 +338,9 @@ def load_fleet() -> List[str]:
         try:
             with open(processor_path, 'r') as f:
                 content = f.read()
-                # Find ALLOWED_PLATES set
+                # Find ALLOWED_PLATES set (use DOTALL to match across multiple lines)
                 import re
-                match = re.search(r"ALLOWED_PLATES\s*=\s*\{([^}]+)\}", content)
+                match = re.search(r"ALLOWED_PLATES\s*=\s*\{([^}]+)\}", content, re.DOTALL)
                 if match:
                     plates_str = match.group(1)
                     # Extract quoted strings
@@ -171,7 +374,11 @@ def get_stats(records: List[Dict]) -> Dict:
     
     for r in records:
         try:
-            dt = datetime.fromisoformat(r['datetime'].replace('Z', '+00:00'))
+            # Use pre-parsed datetime object
+            dt = r.get('datetime_obj')
+            if dt is None:
+                continue
+                
             record_date = dt.date()
             
             if record_date == today:
@@ -183,7 +390,7 @@ def get_stats(records: List[Dict]) -> Dict:
                 stats['week_records'] += 1
                 stats['week_liters'] += r['liters']
                 stats['week_amount'] += r['amount']
-        except:
+        except Exception as e:
             pass
     
     return stats
@@ -201,7 +408,15 @@ def get_chart_data(records: List[Dict], days: int = 7) -> Dict:
     
     for r in records:
         try:
-            dt = datetime.fromisoformat(r['datetime'].replace('Z', '+00:00'))
+            # Use pre-parsed datetime object
+            dt = r.get('datetime_obj')
+            if dt is None:
+                continue
+            
+            # Make cutoff comparison timezone-naive
+            if dt.tzinfo:
+                dt = dt.replace(tzinfo=None)
+            
             if dt < cutoff:
                 continue
             
@@ -232,7 +447,7 @@ def get_chart_data(records: List[Dict], days: int = 7) -> Dict:
                 if car not in top_vehicles:
                     top_vehicles[car] = 0
                 top_vehicles[car] += r['amount']
-        except:
+        except Exception as e:
             pass
     
     # Sort daily data by date
@@ -315,25 +530,50 @@ async def approvals_page(request: Request):
 
 @app.post("/approvals/{approval_id}/approve")
 async def approve_record(approval_id: str):
-    """Approve a pending record"""
+    """Approve a pending record with safe file operations"""
     path = DATA_DIR / 'pending_approvals.json'
     
-    if not path.exists():
+    approvals = safe_json_load(path, [])
+    if not approvals:
         raise HTTPException(status_code=404, detail="No approvals found")
-    
-    with open(path, 'r') as f:
-        approvals = json.load(f)
     
     for approval in approvals:
         if approval.get('id') == approval_id:
+            if approval.get('status') != 'pending':
+                raise HTTPException(status_code=400, detail=f"Approval already {approval.get('status')}")
+            
             approval['status'] = 'approved'
             approval['approved_at'] = datetime.now().isoformat()
             approval['approved_via'] = 'web'
             
-            with open(path, 'w') as f:
-                json.dump(approvals, f, indent=2)
+            if not safe_json_save(path, approvals):
+                raise HTTPException(status_code=500, detail="Failed to save approval")
             
-            # TODO: Trigger reprocessing of the approved record
+            # Create raw message file for processor (like Node.js does)
+            record = approval.get('record', {})
+            if record and approval.get('type') in ['car_cooldown', 'driver_change', 'edit']:
+                raw_messages_dir = DATA_DIR / 'raw_messages'
+                raw_messages_dir.mkdir(exist_ok=True)
+                
+                raw_msg_file = raw_messages_dir / f"msg_approved_{approval_id}_{int(datetime.now().timestamp() * 1000)}.json"
+                
+                msg_data = {
+                    'id': f'approved_{approval_id}',
+                    'timestamp': int(datetime.now().timestamp()),
+                    'datetime': datetime.now().isoformat(),
+                    'groupName': 'Approved',
+                    'groupId': '',
+                    'senderPhone': '',
+                    'senderName': record.get('sender', 'Web Approved'),
+                    'body': f"FUEL UPDATE\nDEPARTMENT: {record.get('department', '')}\nDRIVER: {record.get('driver', '')}\nCAR: {record.get('car', '')}\nLITERS: {record.get('liters', '')}\nAMOUNT: {record.get('amount', '')}\nTYPE: {record.get('type', '')}\nODOMETER: {record.get('odometer', '')}",
+                    'capturedAt': datetime.now().isoformat(),
+                    'isApproved': True,
+                    'approvalType': approval.get('type'),
+                    'originalApprovalId': approval_id
+                }
+                
+                safe_json_save(raw_msg_file, msg_data)
+            
             return JSONResponse({"status": "approved", "id": approval_id})
     
     raise HTTPException(status_code=404, detail="Approval not found")
@@ -341,23 +581,44 @@ async def approve_record(approval_id: str):
 
 @app.post("/approvals/{approval_id}/reject")
 async def reject_record(approval_id: str):
-    """Reject a pending record"""
+    """Reject a pending record with safe file operations"""
     path = DATA_DIR / 'pending_approvals.json'
     
-    if not path.exists():
+    approvals = safe_json_load(path, [])
+    if not approvals:
         raise HTTPException(status_code=404, detail="No approvals found")
-    
-    with open(path, 'r') as f:
-        approvals = json.load(f)
     
     for approval in approvals:
         if approval.get('id') == approval_id:
+            if approval.get('status') != 'pending':
+                raise HTTPException(status_code=400, detail=f"Approval already {approval.get('status')}")
+            
             approval['status'] = 'rejected'
             approval['rejected_at'] = datetime.now().isoformat()
             approval['rejected_via'] = 'web'
             
-            with open(path, 'w') as f:
-                json.dump(approvals, f, indent=2)
+            if not safe_json_save(path, approvals):
+                raise HTTPException(status_code=500, detail="Failed to save rejection")
+            
+            # Send rejection notification to WhatsApp
+            record = approval.get('record', {})
+            if record:
+                confirmations_path = DATA_DIR / 'confirmations.json'
+                confirmations = safe_json_load(confirmations_path, [])
+                
+                reject_msg = f"[REJECTED] *FUEL REPORT REJECTED*\n\n"
+                reject_msg += f"Vehicle: {record.get('car', 'N/A')}\n"
+                reject_msg += f"Driver: {record.get('driver', 'N/A')}\n"
+                reject_msg += f"Reason: {approval.get('reason', 'Admin rejected via web')}\n"
+                reject_msg += f"\n_Rejected via Web Dashboard_"
+                
+                confirmations.append({
+                    'timestamp': datetime.now().isoformat(),
+                    'message': reject_msg,
+                    'notified': False
+                })
+                
+                safe_json_save(confirmations_path, confirmations)
             
             return JSONResponse({"status": "rejected", "id": approval_id})
     
@@ -396,6 +657,157 @@ async def api_stats():
     return get_stats(records)
 
 
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for monitoring"""
+    health = {
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'checks': {}
+    }
+    
+    # Check Excel file
+    excel_path = get_excel_path()
+    health['checks']['excel'] = {
+        'exists': excel_path.exists(),
+        'path': str(excel_path)
+    }
+    if excel_path.exists():
+        health['checks']['excel']['size_mb'] = round(excel_path.stat().st_size / 1024 / 1024, 2)
+        health['checks']['excel']['modified'] = datetime.fromtimestamp(excel_path.stat().st_mtime).isoformat()
+    
+    # Check data directories
+    for name in ['raw_messages', 'processed', 'errors']:
+        dir_path = DATA_DIR / name
+        file_count = len(list(dir_path.glob('*.json'))) if dir_path.exists() else 0
+        health['checks'][name] = {
+            'exists': dir_path.exists(),
+            'file_count': file_count
+        }
+    
+    # Check pending approvals
+    approvals = load_pending_approvals()
+    health['checks']['pending_approvals'] = len(approvals)
+    
+    # Overall status
+    if not excel_path.exists():
+        health['status'] = 'degraded'
+        health['message'] = 'Excel file not found'
+    elif health['checks'].get('raw_messages', {}).get('file_count', 0) > 100:
+        health['status'] = 'warning'
+        health['message'] = 'Large queue of unprocessed messages'
+    
+    return health
+
+
+@app.post("/api/backup")
+async def create_backup():
+    """Create a backup of the Excel file and data files"""
+    import shutil
+    
+    backup_results = {'timestamp': datetime.now().isoformat(), 'files': []}
+    backup_dir = DATA_DIR / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Backup Excel file
+    excel_path = get_excel_path()
+    if excel_path.exists():
+        try:
+            backup_name = f"fuel_records_{timestamp}.xlsx"
+            backup_path = backup_dir / backup_name
+            shutil.copy2(excel_path, backup_path)
+            backup_results['files'].append({'file': 'fuel_records.xlsx', 'status': 'success', 'backup': backup_name})
+        except Exception as e:
+            backup_results['files'].append({'file': 'fuel_records.xlsx', 'status': 'error', 'error': str(e)})
+    
+    # Backup JSON data files
+    json_files = ['pending_approvals.json', 'car_last_update.json', 'confirmations.json', 'validation_errors.json']
+    for json_file in json_files:
+        src = DATA_DIR / json_file
+        if src.exists():
+            try:
+                backup_name = f"{json_file.replace('.json', '')}_{timestamp}.json"
+                shutil.copy2(src, backup_dir / backup_name)
+                backup_results['files'].append({'file': json_file, 'status': 'success', 'backup': backup_name})
+            except Exception as e:
+                backup_results['files'].append({'file': json_file, 'status': 'error', 'error': str(e)})
+    
+    # Clean old backups (keep last 20)
+    for pattern in ['fuel_records_*.xlsx', '*_*.json']:
+        try:
+            backups = sorted(backup_dir.glob(pattern))
+            if len(backups) > 20:
+                for old_backup in backups[:-20]:
+                    old_backup.unlink()
+        except:
+            pass
+    
+    backup_results['total'] = len(backup_results['files'])
+    backup_results['success_count'] = sum(1 for f in backup_results['files'] if f['status'] == 'success')
+    
+    return backup_results
+
+
+@app.post("/api/cleanup")
+async def cleanup_old_data():
+    """Clean up old processed messages and error files"""
+    cleanup_results = {'timestamp': datetime.now().isoformat(), 'cleaned': []}
+    
+    cutoff = datetime.now() - timedelta(days=30)
+    
+    # Clean old processed files
+    processed_dir = DATA_DIR / 'processed'
+    if processed_dir.exists():
+        count = 0
+        for f in processed_dir.glob('*.json'):
+            try:
+                if datetime.fromtimestamp(f.stat().st_mtime) < cutoff:
+                    f.unlink()
+                    count += 1
+            except:
+                pass
+        cleanup_results['cleaned'].append({'folder': 'processed', 'files_removed': count})
+    
+    # Clean old error files
+    errors_dir = DATA_DIR / 'errors'
+    if errors_dir.exists():
+        count = 0
+        for f in errors_dir.glob('*.json'):
+            try:
+                if datetime.fromtimestamp(f.stat().st_mtime) < cutoff:
+                    f.unlink()
+                    count += 1
+            except:
+                pass
+        cleanup_results['cleaned'].append({'folder': 'errors', 'files_removed': count})
+    
+    # Clean old approvals (non-pending, older than 30 days)
+    approvals_path = DATA_DIR / 'pending_approvals.json'
+    approvals = safe_json_load(approvals_path, [])
+    if approvals:
+        original_count = len(approvals)
+        new_approvals = []
+        for a in approvals:
+            if a.get('status') == 'pending':
+                new_approvals.append(a)
+            else:
+                try:
+                    ts = datetime.fromisoformat(a.get('timestamp', '2000-01-01').replace('Z', '+00:00'))
+                    if ts.replace(tzinfo=None) > cutoff:
+                        new_approvals.append(a)
+                except:
+                    new_approvals.append(a)  # Keep if we can't parse
+        
+        removed = original_count - len(new_approvals)
+        if removed > 0:
+            safe_json_save(approvals_path, new_approvals)
+            cleanup_results['cleaned'].append({'file': 'pending_approvals.json', 'entries_removed': removed})
+    
+    return cleanup_results
+
+
 @app.get("/api/records")
 async def api_records(limit: int = 100, offset: int = 0):
     """API endpoint for records"""
@@ -410,16 +822,171 @@ async def api_chart_data(days: int = 7):
     return get_chart_data(records, days=days)
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8080):
-    """Run the web server"""
+# Real-time updates via Server-Sent Events (SSE)
+async def event_generator():
+    """Generate SSE events for real-time updates"""
+    last_modified = {}
+    files_to_watch = [
+        get_excel_path(),
+        DATA_DIR / 'pending_approvals.json',
+        DATA_DIR / 'car_last_update.json',
+        DATA_DIR / 'confirmations.json',
+    ]
+    
+    # Initialize last modified times
+    for file_path in files_to_watch:
+        if file_path.exists():
+            last_modified[str(file_path)] = file_path.stat().st_mtime
+        else:
+            last_modified[str(file_path)] = 0
+    
+    while True:
+        try:
+            changed = False
+            
+            # Check for file changes
+            for file_path in files_to_watch:
+                path_str = str(file_path)
+                if file_path.exists():
+                    current_mtime = file_path.stat().st_mtime
+                    if current_mtime != last_modified.get(path_str, 0):
+                        last_modified[path_str] = current_mtime
+                        changed = True
+            
+            if changed:
+                # Load fresh data
+                records = load_records()
+                stats = get_stats(records)
+                chart_data = get_chart_data(records, days=7)
+                approvals = load_pending_approvals()
+                
+                # Build update payload
+                update_data = {
+                    'type': 'update',
+                    'timestamp': datetime.now().isoformat(),
+                    'stats': stats,
+                    'chart_data': chart_data,
+                    'pending_approvals': len(approvals),
+                    'recent_records': [
+                        {k: v for k, v in r.items() if k != 'datetime_obj'} 
+                        for r in records[:10]
+                    ],
+                }
+                
+                yield f"data: {json.dumps(update_data)}\n\n"
+            
+            # Send heartbeat every 30 seconds
+            await asyncio.sleep(2)
+            yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': datetime.now().isoformat()})}\n\n"
+            
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            await asyncio.sleep(5)
+
+
+@app.get("/api/stream")
+async def stream_updates():
+    """SSE endpoint for real-time updates"""
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.get("/api/dashboard")
+async def api_dashboard():
+    """API endpoint for dashboard data (for real-time updates)"""
+    records = load_records()
+    stats = get_stats(records)
+    chart_data = get_chart_data(records, days=7)
+    
+    return {
+        'stats': stats,
+        'chart_data': chart_data,
+        'recent_records': [
+            {k: v for k, v in r.items() if k != 'datetime_obj'} 
+            for r in records[:10]
+        ],
+    }
+
+
+def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
+    """Check if a port is available for binding"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            return True
+    except OSError:
+        return False
+
+
+def find_available_port(start_port: int = 8080, max_attempts: int = 100, host: str = "0.0.0.0") -> Tuple[int, bool]:
+    """
+    Find an available port starting from start_port.
+    
+    Returns:
+        Tuple of (port, was_original_available)
+        - port: The available port found
+        - was_original_available: True if start_port was available, False if we had to find another
+    """
+    # First check if the requested port is available
+    if is_port_available(start_port, host):
+        return start_port, True
+    
+    # Search for an available port
+    for offset in range(1, max_attempts + 1):
+        port = start_port + offset
+        if port > 65535:
+            break
+        if is_port_available(port, host):
+            return port, False
+    
+    raise RuntimeError(f"Could not find an available port after {max_attempts} attempts starting from {start_port}")
+
+
+def run_server(host: str = "0.0.0.0", port: int = 8080, auto_port: bool = True):
+    """
+    Run the web server.
+    
+    Args:
+        host: Host to bind to
+        port: Preferred port to use
+        auto_port: If True, automatically find an available port if preferred port is in use
+    """
     import uvicorn
     
-    print(f"\n🌐 Starting Fuel Extractor Dashboard...")
-    print(f"   Local:   http://localhost:{port}")
-    print(f"   Network: http://{host}:{port}")
+    actual_port = port
+    
+    if auto_port:
+        try:
+            actual_port, was_original = find_available_port(port, host=host)
+            if not was_original:
+                print(f"\n[!] Port {port} is in use, switching to port {actual_port}")
+        except RuntimeError as e:
+            print(f"\n[ERROR] {e}")
+            return
+    else:
+        # Check if port is available when auto_port is disabled
+        if not is_port_available(port, host):
+            print(f"\n[ERROR] Port {port} is already in use.")
+            print(f"   Try a different port with --port <number>")
+            print(f"   Or let the system find one with --port auto")
+            return
+    
+    print(f"\n[START] Starting Fuel Extractor Dashboard...")
+    print(f"   Local:   http://localhost:{actual_port}")
+    print(f"   Network: http://{host}:{actual_port}")
     print(f"\n   Press Ctrl+C to stop\n")
     
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(app, host=host, port=actual_port, log_level="info")
 
 
 if __name__ == "__main__":

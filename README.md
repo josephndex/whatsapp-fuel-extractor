@@ -5,18 +5,18 @@ Automatically extract fueling details from WhatsApp group messages and save them
 ## Features
 
 ### Core Features
-- 📱 **Real-time monitoring** - Captures messages as they arrive in the WhatsApp group
-- ✅ **Instant confirmation** - Sends acknowledgment within seconds of receiving a report
-- 📊 **Excel export** - Clean, formatted Excel files with all fuel records
-- 🔁 **Session persistence** - Survives restarts without re-scanning QR
-- 💻 **Cross-platform** - Works on Linux and Windows with auto-discovery of conda
+- **Real-time monitoring** - Captures messages as they arrive in the WhatsApp group
+- **Instant confirmation** - Sends acknowledgment within seconds of receiving a report
+- **Excel export** - Clean, formatted Excel files with all fuel records
+- **Session persistence** - Survives restarts without re-scanning QR
+- **Cross-platform** - Works on Linux and Windows with auto-discovery of conda
 
 ### Multi-Layer Validation
-- ✔️ **Required fields** - All 7 fields must be present and filled
-- ✔️ **Fleet whitelist** - Only approved vehicle plates are accepted (80+ vehicles)
-- ✔️ **Odometer check** - New reading must be greater than previous
-- ✔️ **12-hour cooldown** - Same car can't fuel again within 12 hours
-- ✔️ **Edit detection** - Tracks message edits and requires approval for key changes
+- **Required fields** - All 7 fields must be present and filled
+- **Fleet whitelist** - Only approved vehicle plates are accepted (80+ vehicles)
+- **Odometer check** - New reading must be greater than previous
+- **12-hour cooldown** - Same car can't fuel again within 12 hours
+- **Edit detection** - Tracks message edits and requires approval for key changes
 
 ### Admin Commands
 | Command | Description |
@@ -89,7 +89,39 @@ WHATSAPP FUEL EXTRACTOR/
 
 ## Quick Start
 
-### 1. Install Dependencies
+### Using the Unified Launcher (Recommended)
+
+The easiest way to get started is using the all-in-one launcher:
+
+```bash
+# Windows - just double-click or run:
+run_fuel_extractor.bat
+
+# Linux/Mac:
+chmod +x run_fuel_extractor.sh
+./run_fuel_extractor.sh
+```
+
+**First run?** The script will automatically detect missing dependencies and offer to install them.
+
+**Features:**
+- Auto-detects if setup is needed
+- Interactive Python CLI menu
+- Setup menu with install/update/clean options
+- Pass commands directly: `run_fuel_extractor.bat listen`
+
+**Command-line options:**
+```bash
+run_fuel_extractor --setup      # Open setup menu
+run_fuel_extractor --clean      # Clean install
+run_fuel_extractor listen       # Start listener directly
+run_fuel_extractor web          # Start web dashboard
+run_fuel_extractor --help       # Show help
+```
+
+### Manual Setup (Alternative)
+
+#### 1. Install Dependencies
 
 ```bash
 # Python (using conda)
@@ -97,11 +129,11 @@ conda create -n fuel-extractor python=3.11 -y
 conda activate fuel-extractor
 pip install -r requirements.txt
 
-# Node.js
+# Node.js (includes Chromium download)
 npm install
 ```
 
-### 2. Configure
+#### 2. Configure
 
 Edit `config.json`:
 
@@ -114,39 +146,35 @@ Edit `config.json`:
 }
 ```
 
-### 3. Start the System
-
-Using the CLI wrapper:
+#### 3. Start the System
 
 ```bash
 # Terminal 1 - Start WhatsApp listener
-./fuel listen
+./run_fuel_extractor.sh listen
 
 # Terminal 2 - Start message processor
-./fuel process
+./run_fuel_extractor.sh process
 ```
 
-**Windows:** Use `fuel` instead of `./fuel`
+**Windows:** Use `run_fuel_extractor.bat` instead
 
 Scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device)
 
 ## CLI Commands
 
-The `fuel` command provides a unified interface for all operations:
-
 | Command | Description |
 |---------|-------------|
-| `./fuel listen` | Start WhatsApp listener (Node.js) |
-| `./fuel process` | Start fuel data processor |
-| `./fuel once` | Process pending messages once and exit |
-| `./fuel summary` | Generate weekly summary |
-| `./fuel summary --daily` | Generate daily summary |
-| `./fuel summary --monthly` | Generate monthly summary |
-| `./fuel summary --car KXX123Y` | Get vehicle-specific summary |
-| `./fuel reset` | Reset all data (with confirmation) |
-| `./fuel reset --yes` | Reset without confirmation |
-| `./fuel status` | Show system status |
-| `./fuel --help` | Show all commands |
+| `run_fuel_extractor listen` | Start WhatsApp listener (Node.js) |
+| `run_fuel_extractor process` | Start fuel data processor |
+| `run_fuel_extractor once` | Process pending messages once and exit |
+| `run_fuel_extractor web` | Start web dashboard |
+| `run_fuel_extractor summary` | Generate weekly summary |
+| `run_fuel_extractor summary --daily` | Generate daily summary |
+| `run_fuel_extractor summary --monthly` | Generate monthly summary |
+| `run_fuel_extractor summary --car KXX123Y` | Get vehicle-specific summary |
+| `run_fuel_extractor reset` | Reset all data (with confirmation) |
+| `run_fuel_extractor status` | Show system status |
+| `run_fuel_extractor --help` | Show all commands |
 
 ## Uploads: Google Sheets + Database (Optional)
 
@@ -230,75 +258,75 @@ ODOMETER: 19,009
 When the same car tries to fuel again within 12 hours, admin receives detailed comparison:
 
 ```
-⚠️ *DUPLICATE FUEL REPORT - KCZ223P*
+[!] *DUPLICATE FUEL REPORT - KCZ223P*
 ━━━━━━━━━━━━━━━━━━━━━━━
 
-⏱️ *TIME SINCE LAST FUELING:* 2.5 hours
-⏳ Cooldown remaining: 9.5 hours
+*TIME SINCE LAST FUELING:* 2.5 hours
+Cooldown remaining: 9.5 hours
 
-👤 *DRIVER COMPARISON*
-• Previous: JOHN
-• Current: MARY
-⚠️ _Driver changed!_
+*DRIVER COMPARISON*
+- Previous: JOHN
+- Current: MARY
+[!] _Driver changed!_
 
-📏 *ODOMETER / DISTANCE*
-• Previous: 45,230 km
-• Current: 45,380 km
-• Distance traveled: *150 km*
+*ODOMETER / DISTANCE*
+- Previous: 45,230 km
+- Current: 45,380 km
+- Distance traveled: *150 km*
 
-⛽ *FUEL COMPARISON*
-• Previous: 25.0 L (KSH 10,000)
-• Current: 27.5 L (KSH 11,000)
-• Efficiency since last: 6.0 km/L
+*FUEL COMPARISON*
+- Previous: 25.0 L (KSH 10,000)
+- Current: 27.5 L (KSH 11,000)
+- Efficiency since last: 6.0 km/L
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-🔑 Approval ID: *abc12345*
+Approval ID: *abc12345*
 
-✅ *!approve abc12345* - Log as new record
-❌ *!reject abc12345* - Discard
+*!approve abc12345* - Log as new record
+*!reject abc12345* - Discard
 ```
 
 ### Message Edit Detection
 When a driver edits their message within 10 minutes:
 
 ```
-✏️ *MESSAGE EDIT DETECTED*
+[EDIT] *MESSAGE EDIT DETECTED*
 ━━━━━━━━━━━━━━━━━━━━━━━
 
-⏱️ *Time since original post:* 3 minutes
-📝 *Fields changed:* ODOMETER, AMOUNT
+*Time since original post:* 3 minutes
+*Fields changed:* ODOMETER, AMOUNT
 
-📊 *DETAILED CHANGES*
+*DETAILED CHANGES*
 ───────────────────────
-📏 *ODOMETER*
+*ODOMETER*
    Before: 45,230 km
    After:  45,380 km
    Diff:   +150 km
 
-💰 *AMOUNT*
+*AMOUNT*
    Before: KSH 10,000
    After:  KSH 11,500
    Diff:   +KSH 1,500
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-🔑 Approval ID: *xyz789*
+Approval ID: *xyz789*
 
-✅ *!approve xyz789* - Accept edit
-❌ *!reject xyz789* - Keep original
+*!approve xyz789* - Accept edit
+*!reject xyz789* - Keep original
 ```
 
 ## Summary Reports
 
-### Daily Summary (☀️)
+### Daily Summary
 Today's date, totals, fuel type breakdown, top vehicle, department summary.
 
-### Weekly Summary (📊)
-Week range, totals, daily averages, 🏆 top performers, efficiency stats.
+### Weekly Summary
+Week range, totals, daily averages, top performers, efficiency stats.
 
-### Monthly Summary (📈)
+### Monthly Summary
 Executive overview, consumption rates, fleet overview, fuel distribution %, department breakdown %, top 5 vehicles, highlights.
 
-### Vehicle Summary (🚗)
+### Vehicle Summary
 ```
 !car KCA542Q
 ```

@@ -24,8 +24,10 @@ import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -132,6 +134,30 @@ def get_conda_python():
     return sys.executable
 
 
+def _handle_remove_readonly(func, path, exc_info):
+    """
+    Error handler for shutil.rmtree on Windows.
+    Handles permission errors by attempting to change file permissions and retry.
+    """
+    # Check if it's a permission error
+    if not isinstance(exc_info[1], PermissionError):
+        raise exc_info[1]
+    
+    try:
+        # Try to change file permissions and retry
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        # If still failing, wait briefly and try once more (file might be releasing)
+        try:
+            time.sleep(0.1)
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except Exception:
+            # Give up silently - the outer try/except will handle it
+            pass
+
+
 def run_command(cmd, cwd=None, stream_output=True):
     """Run a command and optionally stream its output"""
     if cwd is None:
@@ -145,7 +171,9 @@ def run_command(cmd, cwd=None, stream_output=True):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            encoding='utf-8',
+            errors='replace'  # Replace undecodable chars instead of crashing
         )
         
         try:
@@ -158,7 +186,8 @@ def run_command(cmd, cwd=None, stream_output=True):
             console.print("\n[yellow]Process interrupted by user[/yellow]")
             return 1
     else:
-        result = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True)
+        result = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True,
+                               encoding='utf-8', errors='replace')
         return result.returncode, result.stdout, result.stderr
 
 
@@ -235,15 +264,281 @@ def cmd_summary(args):
 
 
 def cmd_reset(args):
-    """Reset all data"""
-    console.rule("[bold red]WhatsApp Fuel Extractor - FULL RESET[/bold red]")
+    """Reset data with selective options"""
+    console.rule("[bold red]WhatsApp Fuel Extractor - Reset[/bold red]")
     console.print()
     
-    console.print("[yellow]This will remove:[/yellow]")
+    # Check if --all flag is passed for full reset without prompts
+    if hasattr(args, 'all') and args.all:
+        return _perform_full_reset(args)
+    
+    # Interactive mode - let user select what to reset
+    if QUESTIONARY_AVAILABLE:
+        reset_options = questionary.checkbox(
+            "What would you like to reset?",
+            choices=[
+                questionary.Choice("[1] Raw Messages (unprocessed queue)", value="raw_messages", checked=False),
+                questionary.Choice("[2] Processed Messages (already exported)", value="processed", checked=False),
+                questionary.Choice("[3] Error Files (failed validations)", value="errors", checked=False),
+                questionary.Choice("[4] Excel Output Files", value="excel", checked=False),
+                questionary.Choice("[5] WhatsApp Session (requires new QR scan)", value="session", checked=False),
+                questionary.Choice("[6] Tracking Data (cooldowns, history, approvals)", value="tracking", checked=False),
+                questionary.Choice("[7] Log Files", value="logs", checked=False),
+                questionary.Choice("[8] Backups Folder", value="backups", checked=False),
+                questionary.Choice("[9] Database Records (PostgreSQL)", value="database", checked=False),
+                questionary.Choice("[10] Google Sheets Data", value="sheets", checked=False),
+                questionary.Choice("[!] EVERYTHING (Full Reset)", value="everything", checked=False),
+            ],
+            style=custom_style,
+            instruction="(Space to select, Enter to confirm)"
+        ).ask()
+        
+        if not reset_options:
+            console.print("[yellow]Reset cancelled.[/yellow]")
+            return 0
+        
+        # If "everything" selected, do full reset
+        if "everything" in reset_options:
+            return _perform_full_reset(args)
+        
+    else:
+        # Fallback for no questionary
+        console.print("[bold]Reset Options:[/bold]")
+        console.print("  1. Raw Messages only")
+        console.print("  2. Processed Messages only")
+        console.print("  3. Error Files only")
+        console.print("  4. Excel Output Files")
+        console.print("  5. WhatsApp Session")
+        console.print("  6. Tracking Data (cooldowns, history)")
+        console.print("  7. Log Files")
+        console.print("  8. Backups")
+        console.print("  9. Database Records")
+        console.print("  10. Google Sheets Data")
+        console.print("  A. EVERYTHING (Full Reset)")
+        console.print("  Q. Cancel")
+        console.print()
+        
+        choice = input("Enter choices (comma-separated, e.g., 1,2,4): ").strip().upper()
+        
+        if choice == 'Q' or not choice:
+            console.print("[yellow]Reset cancelled.[/yellow]")
+            return 0
+        
+        if choice == 'A':
+            return _perform_full_reset(args)
+        
+        # Map choices to options
+        choice_map = {
+            '1': 'raw_messages', '2': 'processed', '3': 'errors',
+            '4': 'excel', '5': 'session', '6': 'tracking',
+            '7': 'logs', '8': 'backups', '9': 'database', '10': 'sheets'
+        }
+        
+        reset_options = []
+        for c in choice.split(','):
+            c = c.strip()
+            if c in choice_map:
+                reset_options.append(choice_map[c])
+    
+    if not reset_options:
+        console.print("[yellow]No options selected. Reset cancelled.[/yellow]")
+        return 0
+    
+    # Show confirmation
+    console.print()
+    console.print("[yellow]You selected to reset:[/yellow]")
+    for opt in reset_options:
+        console.print(f"  • {opt.replace('_', ' ').title()}")
+    console.print()
+    
+    # Confirm
+    if not (hasattr(args, 'yes') and args.yes):
+        if RICH_AVAILABLE:
+            from rich.prompt import Confirm
+            if not Confirm.ask("[red]Proceed with reset?[/red]"):
+                console.print("[yellow]Reset cancelled.[/yellow]")
+                return 0
+        else:
+            confirm = input("Proceed with reset? (y/N): ")
+            if confirm.lower() != 'y':
+                console.print("Reset cancelled.")
+                return 0
+    
+    # Perform selected resets
+    console.print()
+    console.print("[cyan]Resetting selected items...[/cyan]")
+    console.print()
+    
+    reset_count = 0
+    
+    # Raw Messages
+    if 'raw_messages' in reset_options:
+        console.print("  [dim]Removing raw messages...[/dim]")
+        folder_path = DATA_DIR / 'raw_messages'
+        if folder_path.exists():
+            count = 0
+            for f in folder_path.glob('*.json'):
+                f.unlink()
+                count += 1
+            console.print(f"    [green]✓ Removed {count} raw message files[/green]")
+            reset_count += count
+    
+    # Processed Messages
+    if 'processed' in reset_options:
+        console.print("  [dim]Removing processed messages...[/dim]")
+        folder_path = DATA_DIR / 'processed'
+        if folder_path.exists():
+            count = 0
+            for f in folder_path.glob('*.json'):
+                f.unlink()
+                count += 1
+            console.print(f"    [green]✓ Removed {count} processed files[/green]")
+            reset_count += count
+    
+    # Error Files
+    if 'errors' in reset_options:
+        console.print("  [dim]Removing error files...[/dim]")
+        folder_path = DATA_DIR / 'errors'
+        if folder_path.exists():
+            count = 0
+            for f in folder_path.glob('*.json'):
+                f.unlink()
+                count += 1
+            console.print(f"    [green]✓ Removed {count} error files[/green]")
+            reset_count += count
+    
+    # Excel Output
+    if 'excel' in reset_options:
+        console.print("  [dim]Removing Excel output files...[/dim]")
+        folder_path = DATA_DIR / 'output'
+        if folder_path.exists():
+            count = 0
+            for f in folder_path.glob('*'):
+                if f.name != '.gitkeep':
+                    if f.is_file():
+                        f.unlink()
+                        count += 1
+                    else:
+                        shutil.rmtree(f)
+                        count += 1
+            console.print(f"    [green]✓ Removed {count} output files[/green]")
+            reset_count += count
+    
+    # WhatsApp Session
+    if 'session' in reset_options:
+        console.print("  [dim]Removing WhatsApp session...[/dim]")
+        session_path = DATA_DIR / 'session'
+        if session_path.exists():
+            try:
+                shutil.rmtree(session_path, onerror=_handle_remove_readonly)
+                session_path.mkdir(exist_ok=True)
+                console.print("    [green]✓ Session removed (new QR scan required)[/green]")
+                reset_count += 1
+            except Exception as e:
+                console.print(f"    [yellow]⚠ Could not fully remove session: {e}[/yellow]")
+        
+        cache_path = ROOT_DIR / '.wwebjs_cache'
+        if cache_path.exists():
+            try:
+                shutil.rmtree(cache_path, onerror=_handle_remove_readonly)
+                console.print("    [green]✓ Browser cache removed[/green]")
+            except Exception as e:
+                console.print(f"    [yellow]⚠ Could not remove cache: {e}[/yellow]")
+    
+    # Tracking Data
+    if 'tracking' in reset_options:
+        console.print("  [dim]Resetting tracking files...[/dim]")
+        tracking_files = [
+            ('car_last_update.json', '{}'),
+            ('driver_history.json', '{}'),
+            ('last_processed.json', '{}'),
+            ('car_summary.json', '{}'),
+            ('pending_approvals.json', '[]'),
+            ('confirmations.json', '[]'),
+            ('validation_errors.json', '[]'),
+        ]
+        for f, content in tracking_files:
+            fp = DATA_DIR / f
+            with open(fp, 'w') as file:
+                file.write(content)
+        console.print(f"    [green]✓ Reset {len(tracking_files)} tracking files[/green]")
+        reset_count += len(tracking_files)
+    
+    # Log Files
+    if 'logs' in reset_options:
+        console.print("  [dim]Removing log files...[/dim]")
+        count = 0
+        for f in ['listener.log', 'processor.log']:
+            fp = ROOT_DIR / f
+            if fp.exists():
+                fp.unlink()
+                count += 1
+        # Also check data folder for crash logs
+        crash_log = DATA_DIR / 'crash_log.txt'
+        if crash_log.exists():
+            crash_log.unlink()
+            count += 1
+        console.print(f"    [green]✓ Removed {count} log files[/green]")
+        reset_count += count
+    
+    # Backups
+    if 'backups' in reset_options:
+        console.print("  [dim]Removing backup files...[/dim]")
+        backup_path = DATA_DIR / 'backups'
+        if backup_path.exists():
+            count = 0
+            for f in backup_path.glob('*'):
+                if f.is_file():
+                    f.unlink()
+                    count += 1
+            console.print(f"    [green]✓ Removed {count} backup files[/green]")
+            reset_count += count
+    
+    # Database
+    if 'database' in reset_options:
+        console.print("  [dim]Resetting database records...[/dim]")
+        python_cmd = get_conda_python()
+        result = run_command(f"{python_cmd} python/reset_external.py --database-only", cwd=ROOT_DIR, stream_output=False)
+        if isinstance(result, tuple):
+            if result[0] == 0:
+                console.print("    [green]✓ Database records cleared[/green]")
+                reset_count += 1
+            else:
+                console.print(f"    [yellow]⚠ Database reset issue: {result[2]}[/yellow]")
+        else:
+            console.print("    [green]✓ Database reset executed[/green]")
+            reset_count += 1
+    
+    # Google Sheets
+    if 'sheets' in reset_options:
+        console.print("  [dim]Resetting Google Sheets data...[/dim]")
+        python_cmd = get_conda_python()
+        result = run_command(f"{python_cmd} python/reset_external.py --sheets-only", cwd=ROOT_DIR, stream_output=False)
+        if isinstance(result, tuple):
+            if result[0] == 0:
+                console.print("    [green]✓ Google Sheets data cleared[/green]")
+                reset_count += 1
+            else:
+                console.print(f"    [yellow]⚠ Sheets reset issue: {result[2]}[/yellow]")
+        else:
+            console.print("    [green]✓ Google Sheets reset executed[/green]")
+            reset_count += 1
+    
+    console.print()
+    console.rule(f"[bold green]Reset Complete! ({reset_count} items)[/bold green]")
+    console.print()
+    
+    return 0
+
+
+def _perform_full_reset(args):
+    """Perform a full reset of everything"""
+    console.print("[yellow]This will remove EVERYTHING:[/yellow]")
     console.print("  • All captured messages (raw, processed, errors)")
     console.print("  • Excel output files")
     console.print("  • WhatsApp session data (will need new QR scan)")
     console.print("  • Log files & notification queues")
+    console.print("  • Backup files")
     console.print("  • [bold]DATABASE records[/bold] (fuel_records table)")
     console.print("  • [bold]GOOGLE SHEET data[/bold]")
     console.print()
@@ -262,12 +557,12 @@ def cmd_reset(args):
                 return 0
     
     console.print()
-    console.print("[cyan]Resetting project...[/cyan]")
+    console.print("[cyan]Performing FULL reset...[/cyan]")
     console.print()
     
     # Remove data folders content
     console.print("  [dim]Removing message data...[/dim]")
-    for folder in ['raw_messages', 'processed', 'errors', 'output']:
+    for folder in ['raw_messages', 'processed', 'errors', 'output', 'backups']:
         folder_path = DATA_DIR / folder
         if folder_path.exists():
             for f in folder_path.glob('*'):
@@ -281,12 +576,19 @@ def cmd_reset(args):
     console.print("  [dim]Removing WhatsApp session...[/dim]")
     session_path = DATA_DIR / 'session'
     if session_path.exists():
-        shutil.rmtree(session_path)
+        try:
+            shutil.rmtree(session_path, onerror=_handle_remove_readonly)
+        except Exception as e:
+            console.print(f"  [yellow]Warning: Could not fully remove session folder: {e}[/yellow]")
+            console.print("  [dim]Some files may be locked by Chrome. Try closing any browser windows.[/dim]")
     session_path.mkdir(exist_ok=True)
     
     cache_path = ROOT_DIR / '.wwebjs_cache'
     if cache_path.exists():
-        shutil.rmtree(cache_path)
+        try:
+            shutil.rmtree(cache_path, onerror=_handle_remove_readonly)
+        except Exception as e:
+            console.print(f"  [yellow]Warning: Could not fully remove cache folder: {e}[/yellow]")
     
     # Remove notification queues
     console.print("  [dim]Removing notification files...[/dim]")
@@ -313,6 +615,9 @@ def cmd_reset(args):
         fp = ROOT_DIR / f
         if fp.exists():
             fp.unlink()
+    crash_log = DATA_DIR / 'crash_log.txt'
+    if crash_log.exists():
+        crash_log.unlink()
     
     # Reset external data sources
     console.print()
@@ -323,14 +628,14 @@ def cmd_reset(args):
     # Recreate directories
     console.print()
     console.print("  [dim]Creating empty data directories...[/dim]")
-    for folder in ['raw_messages', 'processed', 'errors', 'output', 'session']:
+    for folder in ['raw_messages', 'processed', 'errors', 'output', 'session', 'backups']:
         folder_path = DATA_DIR / folder
         folder_path.mkdir(exist_ok=True)
         gitkeep = folder_path / '.gitkeep'
         gitkeep.touch()
     
     console.print()
-    console.rule("[bold green]✅ FULL Reset Complete![/bold green]")
+    console.rule("[bold green]FULL Reset Complete![/bold green]")
     console.print()
     console.print("[green]All local files, database, and Google Sheet cleared.[/green]")
     console.print("[green]Ready for fresh testing![/green]")
@@ -381,14 +686,14 @@ def cmd_status(args):
     # Upload settings
     upload = config.get('upload', {})
     console.print("[bold]Upload Settings:[/bold]")
-    console.print(f"  Google Sheets: {'✅ Enabled' if upload.get('toGoogleSheets') else '❌ Disabled'}")
-    console.print(f"  Database: {'✅ Enabled' if upload.get('toDatabase') else '❌ Disabled'}")
+    console.print(f"  Google Sheets: {'[ON] Enabled' if upload.get('toGoogleSheets') else '[OFF] Disabled'}")
+    console.print(f"  Database: {'[ON] Enabled' if upload.get('toDatabase') else '[OFF] Disabled'}")
     console.print()
     
     # Session status
     session_exists = (DATA_DIR / 'session' / 'session').exists()
     console.print("[bold]Session:[/bold]")
-    console.print(f"  WhatsApp: {'✅ Session exists' if session_exists else '❌ No session (need QR scan)'}")
+    console.print(f"  WhatsApp: {'[OK] Session exists' if session_exists else '[!] No session (need QR scan)'}")
     console.print()
     
     return 0
@@ -401,15 +706,20 @@ def cmd_web(args):
     
     host = args.host if hasattr(args, 'host') and args.host else '0.0.0.0'
     port = args.port if hasattr(args, 'port') and args.port else 8080
+    auto_port = getattr(args, 'auto_port', True)  # Default to auto port selection
     
     console.print(f"[green]Starting web dashboard...[/green]")
-    console.print(f"[dim]Local:   http://localhost:{port}[/dim]")
-    console.print(f"[dim]Network: http://{host}:{port}[/dim]")
+    if auto_port:
+        console.print(f"[dim]Preferred port: {port} (will auto-select if in use)[/dim]")
+    else:
+        console.print(f"[dim]Local:   http://localhost:{port}[/dim]")
+        console.print(f"[dim]Network: http://{host}:{port}[/dim]")
     console.print(f"[dim]Press Ctrl+C to stop[/dim]")
     console.print()
     
     python_cmd = get_conda_python()
-    return run_command(f"{python_cmd} -c \"from python.web import run_server; run_server(host='{host}', port={port})\"", cwd=ROOT_DIR)
+    auto_port_str = "True" if auto_port else "False"
+    return run_command(f"{python_cmd} -c \"from python.web import run_server; run_server(host='{host}', port={port}, auto_port={auto_port_str})\"", cwd=ROOT_DIR)
 
 
 def print_banner():
@@ -417,7 +727,7 @@ def print_banner():
     banner = """
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║   🚗 WhatsApp Fuel Extractor CLI                              ║
+║   WhatsApp Fuel Extractor CLI                                 ║
 ║                                                               ║
 ║   Capture, validate, and export fuel reports from WhatsApp    ║
 ║                                                               ║
@@ -440,16 +750,16 @@ def interactive_menu():
     print_banner()
     
     menu_choices = [
-        questionary.Choice("📱 Start WhatsApp Listener", value="listen"),
-        questionary.Choice("⚙️  Start Fuel Processor", value="process"),
-        questionary.Choice("🔄 Process Messages Once", value="once"),
+        questionary.Choice("[1] Start WhatsApp Listener", value="listen"),
+        questionary.Choice("[2] Start Fuel Processor", value="process"),
+        questionary.Choice("[3] Process Messages Once", value="once"),
         questionary.Separator(),
-        questionary.Choice("📊 Generate Summary Report", value="summary_menu"),
-        questionary.Choice("🌐 Open Web Dashboard", value="web"),
-        questionary.Choice("📋 Show System Status", value="status"),
+        questionary.Choice("[4] Generate Summary Report", value="summary_menu"),
+        questionary.Choice("[5] Open Web Dashboard", value="web"),
+        questionary.Choice("[6] Show System Status", value="status"),
         questionary.Separator(),
-        questionary.Choice("🗑️  Reset All Data", value="reset"),
-        questionary.Choice("❌ Exit", value="exit"),
+        questionary.Choice("[7] Reset All Data", value="reset"),
+        questionary.Choice("[Q] Exit", value="exit"),
     ]
     
     choice = questionary.select(
@@ -460,7 +770,7 @@ def interactive_menu():
     ).ask()
     
     if choice == "exit" or choice is None:
-        console.print("\n[dim]Goodbye! 👋[/dim]")
+        console.print("\n[dim]Goodbye![/dim]")
         return None
     
     if choice == "summary_menu":
@@ -472,13 +782,13 @@ def interactive_menu():
 def interactive_summary_menu():
     """Show submenu for summary options"""
     summary_choices = [
-        questionary.Choice("📅 Daily Summary (Today)", value=("summary", "daily")),
-        questionary.Choice("📆 Weekly Summary (Last 7 days)", value=("summary", "weekly")),
-        questionary.Choice("📊 Monthly Summary (Last 30 days)", value=("summary", "monthly")),
+        questionary.Choice("[1] Daily Summary (Today)", value=("summary", "daily")),
+        questionary.Choice("[2] Weekly Summary (Last 7 days)", value=("summary", "weekly")),
+        questionary.Choice("[3] Monthly Summary (Last 30 days)", value=("summary", "monthly")),
         questionary.Separator(),
-        questionary.Choice("🚗 Vehicle-Specific Summary", value=("summary", "car")),
+        questionary.Choice("[4] Vehicle-Specific Summary", value=("summary", "car")),
         questionary.Separator(),
-        questionary.Choice("⬅️  Back to Main Menu", value="back"),
+        questionary.Choice("[B] Back to Main Menu", value="back"),
     ]
     
     choice = questionary.select(
@@ -495,7 +805,19 @@ def interactive_summary_menu():
 
 
 def interactive_web_port():
-    """Ask for web dashboard port"""
+    """Ask for web dashboard port, returns (port, auto_port)"""
+    choice = questionary.select(
+        "Port selection:",
+        choices=[
+            questionary.Choice("[A] Auto (find available port starting at 8080)", value="auto"),
+            questionary.Choice("[M] Specify port manually", value="manual"),
+        ],
+        style=custom_style
+    ).ask()
+    
+    if choice == "auto" or choice is None:
+        return 8080, True
+    
     port = questionary.text(
         "Enter port number:",
         default="8080",
@@ -503,7 +825,7 @@ def interactive_web_port():
         validate=lambda x: x.isdigit() and 1 <= int(x) <= 65535
     ).ask()
     
-    return int(port) if port else 8080
+    return int(port) if port else 8080, True  # Still use auto_port for manual selection
 
 
 def run_interactive():
@@ -553,7 +875,7 @@ def run_interactive():
             elif result == "status":
                 cmd_status(args)
             elif result == "web":
-                args.port = interactive_web_port()
+                args.port, args.auto_port = interactive_web_port()
                 args.host = "0.0.0.0"
                 cmd_web(args)
             elif result == "reset":
@@ -567,14 +889,33 @@ def run_interactive():
             default=True,
             style=custom_style
         ).ask():
-            console.print("\n[dim]Goodbye! 👋[/dim]")
+            console.print("\n[dim]Goodbye![/dim]")
             return 0
 
 
 def main():
-    # If no arguments provided, show interactive menu
-    if len(sys.argv) == 1 and QUESTIONARY_AVAILABLE:
+    # Check if running in a proper terminal for interactive mode
+    is_tty = sys.stdin.isatty()
+    
+    # If no arguments provided, show interactive menu (only if we have a TTY)
+    if len(sys.argv) == 1 and QUESTIONARY_AVAILABLE and is_tty:
         return run_interactive()
+    elif len(sys.argv) == 1 and not is_tty:
+        # Not a TTY, show help instead of failing
+        print_banner()
+        console.print("[yellow][!] Interactive mode requires a terminal.[/yellow]")
+        console.print("[dim]Use command-line arguments instead:[/dim]")
+        console.print()
+        console.print("  ./fuel.sh listen    - Start WhatsApp listener")
+        console.print("  ./fuel.sh process   - Start fuel processor")
+        console.print("  ./fuel.sh once      - Process messages once")
+        console.print("  ./fuel.sh summary   - Generate summary report")
+        console.print("  ./fuel.sh web       - Start web dashboard")
+        console.print("  ./fuel.sh status    - Show system status")
+        console.print("  ./fuel.sh reset     - Reset all data")
+        console.print()
+        console.print("[dim]For help: ./fuel.sh --help[/dim]")
+        return 0
     
     parser = argparse.ArgumentParser(
         description='WhatsApp Fuel Extractor - Interactive CLI',
@@ -616,8 +957,9 @@ Examples:
     summary_parser.add_argument('--days', type=int, help='Number of days for vehicle summary')
     
     # reset command
-    reset_parser = subparsers.add_parser('reset', help='Reset all data (local, database, sheets)')
+    reset_parser = subparsers.add_parser('reset', help='Reset data with selective options')
     reset_parser.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompt')
+    reset_parser.add_argument('--all', '-a', action='store_true', help='Reset everything without interactive menu')
     
     # status command
     status_parser = subparsers.add_parser('status', help='Show system status')
@@ -625,7 +967,9 @@ Examples:
     # web command
     web_parser = subparsers.add_parser('web', help='Start the web dashboard')
     web_parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
-    web_parser.add_argument('--port', '-p', type=int, default=8080, help='Port to listen on (default: 8080)')
+    web_parser.add_argument('--port', '-p', type=int, default=8080, help='Preferred port (default: 8080, auto-selects if in use)')
+    web_parser.add_argument('--no-auto-port', dest='auto_port', action='store_false', default=True,
+                           help='Disable automatic port selection (fail if port is in use)')
     
     args = parser.parse_args()
     

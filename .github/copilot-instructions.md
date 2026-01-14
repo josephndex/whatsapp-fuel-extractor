@@ -216,7 +216,7 @@ if (oldFields.type !== newFields.type) keyFieldsChanged.push('TYPE');
 ### JavaScript (Node.js)
 - ES6+ syntax, async/await
 - `path.join()` for all file paths
-- Log with emojis: ✅ ❌ 📱 🔄 💾 📨 🚫 ⏳ ✏️
+- Log with markers: [OK], [ERROR], [MSG], [SYNC], [SAVED], [MSG], [DENIED], [PENDING], [EDIT]
 - Auto-discover conda with `getCondaPaths()`
 
 ### Python

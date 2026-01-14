@@ -22,6 +22,8 @@ import re
 import json
 import shutil
 import logging
+import fcntl
+from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +32,69 @@ from typing import Dict, List, Optional, Any, Tuple
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
+
+
+# Thread-safe file operations
+@contextmanager
+def file_lock(filepath: Path, mode: str = 'r'):
+    """Context manager for thread-safe file access with locking"""
+    f = None
+    try:
+        f = open(filepath, mode)
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX if 'w' in mode else fcntl.LOCK_SH)
+        yield f
+    finally:
+        if f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            f.close()
+
+
+def safe_json_load(filepath: Path, default: Any = None) -> Any:
+    """Safely load JSON with error handling and locking"""
+    if not filepath.exists():
+        return default if default is not None else {}
+    try:
+        with file_lock(filepath, 'r') as f:
+            content = f.read()
+            if not content.strip():
+                return default if default is not None else {}
+            return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in {filepath}: {e}")
+        # Create backup of corrupted file
+        backup_path = filepath.with_suffix('.json.corrupted')
+        try:
+            shutil.copy2(filepath, backup_path)
+            logger.info(f"Created backup at {backup_path}")
+        except:
+            pass
+        return default if default is not None else {}
+    except Exception as e:
+        logger.error(f"Error loading {filepath}: {e}")
+        return default if default is not None else {}
+
+
+def safe_json_save(filepath: Path, data: Any, indent: int = 2) -> bool:
+    """Safely save JSON with atomic write and locking"""
+    temp_path = filepath.with_suffix('.json.tmp')
+    try:
+        # Ensure parent directory exists
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        # Write to temp file first (atomic write pattern)
+        with open(temp_path, 'w') as f:
+            json.dump(data, f, indent=indent, default=str)
+        # Rename temp to actual (atomic on most filesystems)
+        temp_path.rename(filepath)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving {filepath}: {e}")
+        # Clean up temp file if exists
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except:
+                pass
+        return False
 
 # Setup logging with rotation
 # Rotate log files: max 5MB per file, keep 5 backup files
@@ -112,20 +177,18 @@ def save_validation_error(car: str, driver: str, issue: str, sender_phone: str =
         'notified': False
     }
     
-    errors = []
-    if VALIDATION_ERRORS_PATH.exists():
-        try:
-            with open(VALIDATION_ERRORS_PATH, 'r') as f:
-                errors = json.load(f)
-        except:
-            errors = []
+    errors = safe_json_load(VALIDATION_ERRORS_PATH, [])
+    if not isinstance(errors, list):
+        errors = []
     
     errors.append(error)
     
-    with open(VALIDATION_ERRORS_PATH, 'w') as f:
-        json.dump(errors, f, indent=2)
+    # Limit to last 1000 errors to prevent file bloat
+    if len(errors) > 1000:
+        errors = errors[-1000:]
     
-    logger.info(f"📝 Saved validation error for notification: {car} - {issue[:50]}...")
+    safe_json_save(VALIDATION_ERRORS_PATH, errors)
+    logger.info(f"[SAVED] Saved validation error for notification: {car} - {issue[:50]}...")
 
 
 def save_pending_approval(approval_type: str, record: Dict, original_record: Optional[Dict] = None, reason: str = ''):
@@ -143,113 +206,89 @@ def save_pending_approval(approval_type: str, record: Dict, original_record: Opt
         'notified': False
     }
     
-    approvals = []
-    if PENDING_APPROVALS_PATH.exists():
-        try:
-            with open(PENDING_APPROVALS_PATH, 'r') as f:
-                approvals = json.load(f)
-        except:
-            approvals = []
+    approvals = safe_json_load(PENDING_APPROVALS_PATH, [])
+    if not isinstance(approvals, list):
+        approvals = []
     
     approvals.append(approval)
     
-    with open(PENDING_APPROVALS_PATH, 'w') as f:
-        json.dump(approvals, f, indent=2)
+    # Clean up old approvals (keep last 500)
+    if len(approvals) > 500:
+        # Keep only recent and pending approvals
+        pending = [a for a in approvals if a.get('status') == 'pending']
+        processed = [a for a in approvals if a.get('status') != 'pending'][-300:]
+        approvals = pending + processed
     
-    logger.info(f"📝 Saved pending approval ({approval_type}): {approval['id']} - {reason}")
+    safe_json_save(PENDING_APPROVALS_PATH, approvals)
+    logger.info(f"[SAVED] Saved pending approval ({approval_type}): {approval['id']} - {reason}")
     return approval['id']
 
 
 def get_pending_approvals() -> List[Dict]:
     """Get all pending approvals."""
-    if not PENDING_APPROVALS_PATH.exists():
+    approvals = safe_json_load(PENDING_APPROVALS_PATH, [])
+    if not isinstance(approvals, list):
         return []
-    try:
-        with open(PENDING_APPROVALS_PATH, 'r') as f:
-            approvals = json.load(f)
-        return [a for a in approvals if a.get('status') == 'pending']
-    except:
-        return []
+    return [a for a in approvals if isinstance(a, dict) and a.get('status') == 'pending']
 
 
 def approve_pending(approval_id: str) -> Tuple[bool, str, Optional[Dict]]:
     """Approve a pending record. Returns (success, message, record)."""
-    if not PENDING_APPROVALS_PATH.exists():
+    approvals = safe_json_load(PENDING_APPROVALS_PATH, [])
+    if not approvals:
         return False, 'No pending approvals', None
     
-    try:
-        with open(PENDING_APPROVALS_PATH, 'r') as f:
-            approvals = json.load(f)
-        
-        for approval in approvals:
-            if approval.get('id') == approval_id:
-                if approval.get('status') != 'pending':
-                    return False, f'Approval {approval_id} already processed', None
-                
-                approval['status'] = 'approved'
-                approval['approved_at'] = datetime.now().isoformat()
-                
-                with open(PENDING_APPROVALS_PATH, 'w') as f:
-                    json.dump(approvals, f, indent=2)
-                
+    for approval in approvals:
+        if approval.get('id') == approval_id:
+            if approval.get('status') != 'pending':
+                return False, f'Approval {approval_id} already processed', None
+            
+            approval['status'] = 'approved'
+            approval['approved_at'] = datetime.now().isoformat()
+            
+            if safe_json_save(PENDING_APPROVALS_PATH, approvals):
                 return True, f'Approval {approval_id} approved', approval.get('record')
-        
-        return False, f'Approval {approval_id} not found', None
-        
-    except Exception as e:
-        return False, f'Error: {e}', None
+            else:
+                return False, 'Failed to save approval', None
+    
+    return False, f'Approval {approval_id} not found', None
 
 
 def reject_pending(approval_id: str) -> Tuple[bool, str]:
     """Reject a pending record."""
-    if not PENDING_APPROVALS_PATH.exists():
+    approvals = safe_json_load(PENDING_APPROVALS_PATH, [])
+    if not approvals:
         return False, 'No pending approvals'
     
-    try:
-        with open(PENDING_APPROVALS_PATH, 'r') as f:
-            approvals = json.load(f)
-        
-        for approval in approvals:
-            if approval.get('id') == approval_id:
-                if approval.get('status') != 'pending':
-                    return False, f'Approval {approval_id} already processed'
-                
-                approval['status'] = 'rejected'
-                approval['rejected_at'] = datetime.now().isoformat()
-                
-                with open(PENDING_APPROVALS_PATH, 'w') as f:
-                    json.dump(approvals, f, indent=2)
-                
+    for approval in approvals:
+        if approval.get('id') == approval_id:
+            if approval.get('status') != 'pending':
+                return False, f'Approval {approval_id} already processed'
+            
+            approval['status'] = 'rejected'
+            approval['rejected_at'] = datetime.now().isoformat()
+            
+            if safe_json_save(PENDING_APPROVALS_PATH, approvals):
                 return True, f'Approval {approval_id} rejected'
-        
-        return False, f'Approval {approval_id} not found'
-        
-    except Exception as e:
-        return False, f'Error: {e}'
+            else:
+                return False, 'Failed to save rejection'
+    
+    return False, f'Approval {approval_id} not found'
 
 
 def get_car_last_update(car_plate: str) -> Optional[Dict]:
     """Get the last update info for a car plate."""
-    if not CAR_LAST_UPDATE_PATH.exists():
+    updates = safe_json_load(CAR_LAST_UPDATE_PATH, {})
+    if not isinstance(updates, dict):
         return None
-    
-    try:
-        with open(CAR_LAST_UPDATE_PATH, 'r') as f:
-            updates = json.load(f)
-        return updates.get(normalize_plate(car_plate))
-    except:
-        return None
+    return updates.get(normalize_plate(car_plate))
 
 
 def update_car_last_update(car_plate: str, record: Dict):
     """Update the last fuel record timestamp for a car plate."""
-    updates = {}
-    if CAR_LAST_UPDATE_PATH.exists():
-        try:
-            with open(CAR_LAST_UPDATE_PATH, 'r') as f:
-                updates = json.load(f)
-        except:
-            updates = {}
+    updates = safe_json_load(CAR_LAST_UPDATE_PATH, {})
+    if not isinstance(updates, dict):
+        updates = {}
     
     updates[normalize_plate(car_plate)] = {
         'timestamp': datetime.now().isoformat(),
@@ -261,8 +300,7 @@ def update_car_last_update(car_plate: str, record: Dict):
         'department': record.get('department', '')
     }
     
-    with open(CAR_LAST_UPDATE_PATH, 'w') as f:
-        json.dump(updates, f, indent=2)
+    safe_json_save(CAR_LAST_UPDATE_PATH, updates)
 
 
 def check_car_cooldown(car_plate: str, record: Dict) -> Tuple[bool, Optional[str]]:
@@ -338,42 +376,42 @@ def check_car_cooldown(car_plate: str, record: Dict) -> Tuple[bool, Optional[str
             )
             
             # Build detailed notification message
-            msg = f"⚠️ *DUPLICATE FUEL REPORT - {car_plate}*\n"
-            msg += f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            msg = f"[!] *DUPLICATE FUEL REPORT - {car_plate}*\n"
+            msg += f"----------------------------\n\n"
             
-            msg += f"⏱️ *TIME SINCE LAST FUELING:* {time_interval}\n"
-            msg += f"⏳ Cooldown remaining: {hours_remaining:.1f} hours\n\n"
+            msg += f"[TIME] *TIME SINCE LAST FUELING:* {time_interval}\n"
+            msg += f"[WAIT] Cooldown remaining: {hours_remaining:.1f} hours\n\n"
             
-            msg += f"👤 *DRIVER COMPARISON*\n"
-            msg += f"• Previous: {last_driver}\n"
-            msg += f"• Current: {new_driver}\n"
+            msg += f"[DRIVER] *DRIVER COMPARISON*\n"
+            msg += f"- Previous: {last_driver}\n"
+            msg += f"- Current: {new_driver}\n"
             if last_driver.lower().strip() != new_driver.lower().strip():
-                msg += f"⚠️ _Driver changed!_\n"
+                msg += f"[!] _Driver changed!_\n"
             msg += "\n"
             
-            msg += f"📏 *ODOMETER / DISTANCE*\n"
-            msg += f"• Previous: {last_odo:,} km\n"
-            msg += f"• Current: {new_odo:,} km\n"
+            msg += f"[ODO] *ODOMETER / DISTANCE*\n"
+            msg += f"- Previous: {last_odo:,} km\n"
+            msg += f"- Current: {new_odo:,} km\n"
             if distance_traveled > 0:
-                msg += f"• Distance traveled: *{distance_traveled:,} km*\n"
+                msg += f"- Distance traveled: *{distance_traveled:,} km*\n"
             elif new_odo <= last_odo and new_odo > 0:
-                msg += f"⚠️ _Odometer hasn't increased!_\n"
+                msg += f"[!] _Odometer hasn't increased!_\n"
             msg += "\n"
             
-            msg += f"⛽ *FUEL COMPARISON*\n"
-            msg += f"• Previous: {last_liters:.1f} L (KSH {last_amount:,.0f})\n"
-            msg += f"• Current: {new_liters:.1f} L (KSH {new_amount:,.0f})\n"
+            msg += f"[FUEL] *FUEL COMPARISON*\n"
+            msg += f"- Previous: {last_liters:.1f} L (KSH {last_amount:,.0f})\n"
+            msg += f"- Current: {new_liters:.1f} L (KSH {new_amount:,.0f})\n"
             
             # Calculate efficiency if we have distance
             if distance_traveled > 0 and last_liters > 0:
                 efficiency = distance_traveled / last_liters
-                msg += f"• Efficiency since last: {efficiency:.1f} km/L\n"
+                msg += f"- Efficiency since last: {efficiency:.1f} km/L\n"
             msg += "\n"
             
-            msg += f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            msg += f"🔑 Approval ID: *{approval_id}*\n\n"
-            msg += f"✅ *!approve {approval_id}* - Log as new record\n"
-            msg += f"❌ *!reject {approval_id}* - Discard"
+            msg += f"----------------------------\n"
+            msg += f"[ID] Approval ID: *{approval_id}*\n\n"
+            msg += f"[OK] *!approve {approval_id}* - Log as new record\n"
+            msg += f"[X] *!reject {approval_id}* - Discard"
             
             # Save as approval request - this will tag admins instead of the sender
             save_validation_error(car_plate, record.get('driver', ''), msg, record.get('sender_phone', ''), is_approval_request=True)
@@ -405,7 +443,7 @@ def save_confirmation(record: Dict, sender: str):
     dt_str = record.get('datetime', '')
     
     # Build clean confirmation message
-    msg = "✅ *FUEL REPORT LOGGED*\n\n"
+    msg = "[LOGGED] *FUEL REPORT LOGGED*\n\n"
     
     if record.get('department'):
         msg += f"Department: {record['department']}\n"
@@ -443,20 +481,18 @@ def save_confirmation(record: Dict, sender: str):
         'notified': False
     }
     
-    confirmations = []
-    if CONFIRMATIONS_PATH.exists():
-        try:
-            with open(CONFIRMATIONS_PATH, 'r') as f:
-                confirmations = json.load(f)
-        except:
-            confirmations = []
+    confirmations = safe_json_load(CONFIRMATIONS_PATH, [])
+    if not isinstance(confirmations, list):
+        confirmations = []
     
     confirmations.append(confirmation)
     
-    with open(CONFIRMATIONS_PATH, 'w') as f:
-        json.dump(confirmations, f, indent=2)
+    # Limit to last 500 confirmations to prevent file bloat
+    if len(confirmations) > 500:
+        confirmations = confirmations[-500:]
     
-    logger.info(f"📝 Saved confirmation for: {record.get('car', 'N/A')}")
+    safe_json_save(CONFIRMATIONS_PATH, confirmations)
+    logger.info(f"[SAVED] Saved confirmation for: {record.get('car', 'N/A')}")
 
 
 class FuelReportParser:
@@ -671,18 +707,48 @@ class FuelReportParser:
 
 class ExcelExporter:
     """
-    Handles Excel file creation and appending.
+    Handles Excel file creation and appending with backup mechanism.
     """
     
     COLUMNS = ['DATETIME', 'DEPARTMENT', 'DRIVER', 'CAR', 'LITERS', 'AMOUNT', 'TYPE', 'ODOMETER', 'SENDER', 'RAW_MESSAGE']
+    BACKUP_INTERVAL_RECORDS = 50  # Create backup every N records
     
     def __init__(self, output_folder: str, filename: str):
         self.output_folder = Path(output_folder)
         self.filename = filename
         self.filepath = self.output_folder / filename
+        self.backup_folder = self.output_folder / 'backups'
+        self.records_since_backup = 0
         
         # Ensure output folder exists
         self.output_folder.mkdir(parents=True, exist_ok=True)
+        self.backup_folder.mkdir(parents=True, exist_ok=True)
+    
+    def create_backup(self) -> bool:
+        """Create a timestamped backup of the Excel file."""
+        if not self.filepath.exists():
+            return False
+        
+        try:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_name = f"{self.filename.replace('.xlsx', '')}_{timestamp}.xlsx"
+            backup_path = self.backup_folder / backup_name
+            shutil.copy2(self.filepath, backup_path)
+            logger.info(f"[BACKUP] Created backup: {backup_name}")
+            
+            # Clean old backups (keep last 10)
+            backups = sorted(self.backup_folder.glob(f"{self.filename.replace('.xlsx', '')}_*.xlsx"))
+            if len(backups) > 10:
+                for old_backup in backups[:-10]:
+                    try:
+                        old_backup.unlink()
+                    except:
+                        pass
+            
+            return True
+        except Exception as e:
+            logger.error(f"Backup failed: {e}")
+            return False
     
     def get_last_odometer_for_car(self, car_plate: str) -> Optional[int]:
         """Get the last recorded odometer reading for a specific car."""
@@ -733,7 +799,7 @@ class ExcelExporter:
         
         if new_odometer <= last_odometer:
             error_msg = f"Odometer {new_odometer} is not greater than previous reading {last_odometer}"
-            logger.warning(f"❌ Odometer validation failed for {car_plate}: {error_msg}")
+            logger.warning(f"[ERROR] Odometer validation failed for {car_plate}: {error_msg}")
             
             # Save validation error for WhatsApp notification
             save_validation_error(
@@ -817,11 +883,32 @@ class ExcelExporter:
                 for col, width in column_widths.items():
                     ws.column_dimensions[col].width = width
             
-            # Save workbook
-            wb.save(self.filepath)
+            # Save workbook with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    wb.save(self.filepath)
+                    break
+                except PermissionError:
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(0.5)  # Wait and retry
+                    else:
+                        raise
+            
             logger.info(f"Appended record to {self.filepath}")
+            
+            # Increment counter and backup if needed
+            self.records_since_backup += 1
+            if self.records_since_backup >= self.BACKUP_INTERVAL_RECORDS:
+                self.create_backup()
+                self.records_since_backup = 0
+            
             return True, None
             
+        except PermissionError as e:
+            logger.error(f"Permission denied writing to Excel (file may be open): {e}")
+            return False, "Excel file is open in another program. Please close it and try again."
         except Exception as e:
             logger.error(f"Error appending to Excel: {e}")
             return False, str(e)
@@ -969,7 +1056,7 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
                 car_plate = record.get('car', 'UNKNOWN')
                 driver = record.get('driver', 'Unknown')
                 sender_phone = record.get('sender_phone', '')
-                logger.warning(f"🚫 {issue} in {filepath.name}")
+                logger.warning(f"[DENIED] {issue} in {filepath.name}")
                 save_validation_error(car_plate, driver, issue, sender_phone)
                 move_to_errors(filepath, f"MISSING FIELDS: {', '.join(missing_fields)}")
                 return True
@@ -980,7 +1067,7 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
             # Validate car plate against allowed fleet list (strict match)
             if normalized_plate not in ALLOWED_PLATES:
                 issue = f"Vehicle {record['car']} is not in the approved fleet list. Please check the registration number."
-                logger.warning(f"🚫 Unauthorized plate: {record['car']} (normalized: {normalized_plate}) in {filepath.name}")
+                logger.warning(f"[DENIED] Unauthorized plate: {record['car']} (normalized: {normalized_plate}) in {filepath.name}")
                 save_validation_error(record['car'], record.get('driver', ''), issue, record.get('sender_phone', ''))
                 move_to_errors(filepath, f"UNAUTHORIZED PLATE: {record['car']}")
                 return True
@@ -1000,11 +1087,11 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
                 )
                 
                 if not cooldown_ok:
-                    logger.warning(f"⏳ Car cooldown violation: {filepath.name} - ID: {cooldown_approval_id}")
+                    logger.warning(f"[PENDING] Car cooldown violation: {filepath.name} - ID: {cooldown_approval_id}")
                     move_to_errors(filepath, f"PENDING APPROVAL: {cooldown_approval_id} - Car cooldown")
                     return True
             else:
-                logger.info(f"✅ Admin-approved record - skipping cooldown check")
+                logger.info(f"[OK] Admin-approved record - skipping cooldown check")
             
             # NOTE: Driver consistency check removed - the 12-hour car cooldown is the primary protection.
             # If same car fuels within 12 hours (with same or different driver), it requires approval.
@@ -1036,10 +1123,10 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
                 # UPDATE existing record instead of appending
                 success, error_msg = exporter.update_record(original_datetime, original_car, record)
                 if success:
-                    logger.info(f"✏️ Updated record (edit approval): {original_car}")
+                    logger.info(f"[EDIT] Updated record (edit approval): {original_car}")
                 else:
                     # Fallback to append if update fails
-                    logger.warning(f"⚠️ Update failed, appending instead: {error_msg}")
+                    logger.warning(f"[WARN] Update failed, appending instead: {error_msg}")
                     success, error_msg = exporter.append_record(record)
             else:
                 # Normal append (new record or cooldown approval)
@@ -1048,7 +1135,7 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
             if success:
                 # Move to processed folder
                 move_to_processed(filepath)
-                logger.info(f"✅ Processed: {filepath.name} -> {parsed.get('car', 'N/A')}")
+                logger.info(f"[OK] Processed: {filepath.name} -> {parsed.get('car', 'N/A')}")
                 
                 # Update car last update timestamp (for 12h cooldown - also stores driver info)
                 update_car_last_update(record.get('car', ''), record)
@@ -1098,16 +1185,16 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
                         # For edit approvals, UPDATE instead of insert
                         if is_edit_approval and original_datetime and original_car:
                             if db.update_fuel_record(original_datetime, original_car, record):
-                                logger.info("💾 Updated record in database")
+                                logger.info("[DB] Updated record in database")
                             else:
                                 # Fallback to insert if update fails
                                 if db.insert_fuel_record(record):
-                                    logger.info("💾 Inserted record into database (update not found)")
+                                    logger.info("[DB] Inserted record into database (update not found)")
                                 else:
                                     logger.error("Database insert failed")
                         else:
                             if db.insert_fuel_record(record):
-                                logger.info("💾 Inserted record into database")
+                                logger.info("[DB] Inserted record into database")
                             else:
                                 logger.error("Database insert failed")
                 except Exception as e:
@@ -1119,7 +1206,7 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
                 return True
             elif error_msg and 'Odometer' in error_msg:
                 # Odometer validation failed - move to errors but don't retry
-                logger.warning(f"⚠️ Odometer validation failed: {filepath.name} - {error_msg}")
+                logger.warning(f"[WARN] Odometer validation failed: {filepath.name} - {error_msg}")
                 move_to_errors(filepath, f"ODOMETER ERROR: {error_msg}")
                 return True
             else:
@@ -1128,7 +1215,7 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
         else:
             # Could not parse enough fields
             error_msg = '; '.join(errors) if errors else 'Could not extract required fields'
-            logger.warning(f"❌ Parse failed: {filepath.name} - {error_msg}")
+            logger.warning(f"[ERROR] Parse failed: {filepath.name} - {error_msg}")
             move_to_errors(filepath, error_msg)
             return True
             

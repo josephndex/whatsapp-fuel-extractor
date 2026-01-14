@@ -5,12 +5,14 @@
   "main": "node/listener.js",
   "scripts": {
     "start": "node node/listener.js",
-    "dev": "node node/listener.js --dev"
+    "dev": "node node/listener.js --dev",
+    "postinstall": "echo Chromium installation handled by puppeteer"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",
     "qrcode-terminal": "^0.12.0",
-    "chokidar": "^3.5.3"
+    "chokidar": "^3.5.3",
+    "puppeteer": "^21.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

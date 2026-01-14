@@ -367,43 +367,43 @@ def calculate_statistics(records: List[Dict], days: int = 7) -> Dict:
 def format_daily_summary(stats: Dict) -> str:
     """Format DAILY summary - focused on today's activity and quick insights."""
     if not stats:
-        return "☀️ *DAILY FUEL REPORT*\n\n_No fuel records found for today._"
+        return "[DAILY] *FUEL REPORT*\n\n_No fuel records found for today._"
     
     now = datetime.now()
     
-    msg = "☀️ *DAILY FUEL REPORT*\n"
+    msg = "[DAILY] *FUEL REPORT*\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📅 {now.strftime('%A, %d %B %Y')}\n\n"
+    msg += f"Date: {now.strftime('%A, %d %B %Y')}\n\n"
     
     # Today's totals
-    msg += "💰 *TODAY'S TOTALS*\n"
-    msg += f"   ⛽ Fuel: *{stats['total_liters']:,.2f} L*\n"
-    msg += f"   💵 Spent: *KSH {stats['total_amount']:,.0f}*\n"
-    msg += f"   📝 Reports: *{stats['records_count']}*\n"
-    msg += f"   🚗 Vehicles: *{stats['cars_fueled_count']}*\n\n"
+    msg += "*TODAY'S TOTALS*\n"
+    msg += f"   Fuel: *{stats['total_liters']:,.2f} L*\n"
+    msg += f"   Spent: *KSH {stats['total_amount']:,.0f}*\n"
+    msg += f"   Reports: *{stats['records_count']}*\n"
+    msg += f"   Vehicles: *{stats['cars_fueled_count']}*\n\n"
     
     # Price info
     if stats.get('avg_price_per_liter'):
-        msg += f"📈 Avg Price: *KSH {stats['avg_price_per_liter']:.2f}/L*\n\n"
+        msg += f"Avg Price: *KSH {stats['avg_price_per_liter']:.2f}/L*\n\n"
     
     # Fuel type breakdown
     if stats.get('fuel_types'):
-        msg += "⛽ *BY FUEL TYPE*\n"
+        msg += "*BY FUEL TYPE*\n"
         for ftype, liters in sorted(stats['fuel_types'].items(), key=lambda x: -x[1]):
-            msg += f"   • {ftype}: {liters:,.2f} L\n"
+            msg += f"   - {ftype}: {liters:,.2f} L\n"
         msg += "\n"
     
     # Top vehicle today
     if stats.get('top_consumer'):
         tc = stats['top_consumer']
-        msg += f"🏆 *TOP VEHICLE*\n"
+        msg += f"*TOP VEHICLE*\n"
         msg += f"   {tc['car']} ({tc['liters']:,.2f} L)\n\n"
     
     # Department activity
     if stats.get('dept_breakdown') and len(stats['dept_breakdown']) > 0:
-        msg += "🏢 *DEPARTMENTS*\n"
+        msg += "*DEPARTMENTS*\n"
         for dept, liters in sorted(stats['dept_breakdown'].items(), key=lambda x: -x[1]):
-            msg += f"   • {dept}: {liters:,.2f} L\n"
+            msg += f"   - {dept}: {liters:,.2f} L\n"
         msg += "\n"
     
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -415,73 +415,73 @@ def format_daily_summary(stats: Dict) -> str:
 def format_weekly_summary(stats: Dict) -> str:
     """Format WEEKLY summary - comprehensive view with trends and rankings."""
     if not stats:
-        return "📊 *WEEKLY FUEL SUMMARY*\n\n_No fuel records found for this week._"
+        return "[WEEKLY] *FUEL SUMMARY*\n\n_No fuel records found for this week._"
     
     now = datetime.now()
     week_start = now - timedelta(days=7)
     
-    msg = "📊 *WEEKLY FUEL SUMMARY*\n"
+    msg = "[WEEKLY] *FUEL SUMMARY*\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📅 {week_start.strftime('%d %b')} - {now.strftime('%d %b %Y')}\n\n"
+    msg += f"Period: {week_start.strftime('%d %b')} - {now.strftime('%d %b %Y')}\n\n"
     
     # Week totals
-    msg += "💰 *WEEK TOTALS*\n"
-    msg += f"   ⛽ Total Fuel: *{stats['total_liters']:,.2f} L*\n"
-    msg += f"   💵 Total Spent: *KSH {stats['total_amount']:,.0f}*\n"
-    msg += f"   🛣️ Distance: *{stats.get('total_distance', 0):,} km*\n"
-    msg += f"   📝 Reports: *{stats['records_count']}*\n\n"
+    msg += "*WEEK TOTALS*\n"
+    msg += f"   Total Fuel: *{stats['total_liters']:,.2f} L*\n"
+    msg += f"   Total Spent: *KSH {stats['total_amount']:,.0f}*\n"
+    msg += f"   Distance: *{stats.get('total_distance', 0):,} km*\n"
+    msg += f"   Reports: *{stats['records_count']}*\n\n"
     
     # Averages
     avg_daily_liters = stats['total_liters'] / 7
     avg_daily_spend = stats['total_amount'] / 7
-    msg += "📈 *DAILY AVERAGES*\n"
-    msg += f"   ⛽ {avg_daily_liters:,.1f} L/day\n"
-    msg += f"   💵 KSH {avg_daily_spend:,.0f}/day\n\n"
+    msg += "*DAILY AVERAGES*\n"
+    msg += f"   {avg_daily_liters:,.1f} L/day\n"
+    msg += f"   KSH {avg_daily_spend:,.0f}/day\n\n"
     
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "🏆 *TOP PERFORMERS*\n\n"
+    msg += "*TOP PERFORMERS*\n\n"
     
     # Top vehicle
     if stats.get('top_consumer'):
         tc = stats['top_consumer']
-        msg += f"🚗 *Top Vehicle:*\n"
+        msg += f"*Top Vehicle:*\n"
         msg += f"   {tc['car']} - {tc['liters']:,.2f} L\n\n"
     
     # Top driver
     if stats.get('top_driver'):
         td = stats['top_driver']
-        msg += f"👤 *Top Driver:*\n"
+        msg += f"*Top Driver:*\n"
         msg += f"   {td['name']} - {td['liters']:,.2f} L\n\n"
     
     # Top department
     if stats.get('top_department'):
         tdp = stats['top_department']
-        msg += f"🏢 *Top Department:*\n"
+        msg += f"*Top Department:*\n"
         msg += f"   {tdp['name']} - {tdp['liters']:,.2f} L\n\n"
     
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "📊 *EFFICIENCY STATS*\n\n"
+    msg += "*EFFICIENCY STATS*\n\n"
     
     # Fleet efficiency
     if stats.get('fleet_efficiency'):
-        msg += f"🚛 *Fleet Average:* {stats['fleet_efficiency']:.2f} km/L\n\n"
+        msg += f"*Fleet Average:* {stats['fleet_efficiency']:.2f} km/L\n\n"
     
     # Best efficiency
     if stats.get('best_efficiency'):
         be = stats['best_efficiency']
-        msg += f"✅ *Most Efficient:*\n"
+        msg += f"*Most Efficient:*\n"
         msg += f"   {be['car']} ({be['km_per_liter']:.2f} km/L)\n\n"
     
     # Worst efficiency
     if stats.get('worst_efficiency'):
         we = stats['worst_efficiency']
-        msg += f"⚠️ *Least Efficient:*\n"
+        msg += f"[!] *Least Efficient:*\n"
         msg += f"   {we['car']} ({we['km_per_liter']:.2f} km/L)\n\n"
     
     # Most distance
     if stats.get('most_distance'):
         md = stats['most_distance']
-        msg += f"🛣️ *Most Distance:*\n"
+        msg += f"*Most Distance:*\n"
         msg += f"   {md['car']} ({md['km']:,} km)\n"
     
     msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -493,35 +493,35 @@ def format_weekly_summary(stats: Dict) -> str:
 def format_monthly_summary(stats: Dict) -> str:
     """Format MONTHLY summary - executive overview with department breakdown and trends."""
     if not stats:
-        return "📈 *MONTHLY FUEL REPORT*\n\n_No fuel records found for this month._"
+        return "[MONTHLY] *FUEL REPORT*\n\n_No fuel records found for this month._"
     
     now = datetime.now()
     month_start = now - timedelta(days=30)
     
-    msg = "📈 *MONTHLY FUEL REPORT*\n"
+    msg = "[MONTHLY] *FUEL REPORT*\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📅 {month_start.strftime('%d %b')} - {now.strftime('%d %b %Y')}\n\n"
+    msg += f"Period: {month_start.strftime('%d %b')} - {now.strftime('%d %b %Y')}\n\n"
     
     # Executive Summary
-    msg += "💼 *EXECUTIVE SUMMARY*\n"
+    msg += "*EXECUTIVE SUMMARY*\n"
     msg += "─────────────────────────\n"
-    msg += f"⛽ Total Fuel: *{stats['total_liters']:,.2f} L*\n"
-    msg += f"💵 Total Cost: *KSH {stats['total_amount']:,.0f}*\n"
-    msg += f"🛣️ Total Distance: *{stats.get('total_distance', 0):,} km*\n"
-    msg += f"🚛 Fleet Efficiency: *{stats.get('fleet_efficiency', 0):.2f} km/L*\n"
-    msg += f"📈 Avg Price: *KSH {stats.get('avg_price_per_liter', 0):.2f}/L*\n\n"
+    msg += f"Total Fuel: *{stats['total_liters']:,.2f} L*\n"
+    msg += f"Total Cost: *KSH {stats['total_amount']:,.0f}*\n"
+    msg += f"Total Distance: *{stats.get('total_distance', 0):,} km*\n"
+    msg += f"Fleet Efficiency: *{stats.get('fleet_efficiency', 0):.2f} km/L*\n"
+    msg += f"Avg Price: *KSH {stats.get('avg_price_per_liter', 0):.2f}/L*\n\n"
     
     # Monthly averages
     avg_weekly = stats['total_liters'] / 4
     avg_daily = stats['total_liters'] / 30
-    msg += "📊 *CONSUMPTION RATES*\n"
+    msg += "*CONSUMPTION RATES*\n"
     msg += "─────────────────────────\n"
-    msg += f"📅 Daily: {avg_daily:,.1f} L/day\n"
-    msg += f"📆 Weekly: {avg_weekly:,.1f} L/week\n"
-    msg += f"💰 Daily Cost: KSH {stats['total_amount']/30:,.0f}\n\n"
+    msg += f"Daily: {avg_daily:,.1f} L/day\n"
+    msg += f"Weekly: {avg_weekly:,.1f} L/week\n"
+    msg += f"Daily Cost: KSH {stats['total_amount']/30:,.0f}\n\n"
     
     # Fleet stats
-    msg += "🚗 *FLEET OVERVIEW*\n"
+    msg += "*FLEET OVERVIEW*\n"
     msg += "─────────────────────────\n"
     msg += f"Vehicles Active: *{stats['cars_fueled_count']}*\n"
     msg += f"Drivers Active: *{stats.get('drivers_count', 0)}*\n"
@@ -530,25 +530,25 @@ def format_monthly_summary(stats: Dict) -> str:
     
     # Fuel type distribution
     if stats.get('fuel_types'):
-        msg += "⛽ *FUEL DISTRIBUTION*\n"
+        msg += "*FUEL DISTRIBUTION*\n"
         msg += "─────────────────────────\n"
         for ftype, liters in sorted(stats['fuel_types'].items(), key=lambda x: -x[1]):
             pct = (liters / stats['total_liters'] * 100) if stats['total_liters'] > 0 else 0
-            msg += f"• {ftype}: {liters:,.0f} L ({pct:.1f}%)\n"
+            msg += f"- {ftype}: {liters:,.0f} L ({pct:.1f}%)\n"
         msg += "\n"
     
     # Department breakdown
     if stats.get('dept_breakdown') and len(stats['dept_breakdown']) > 0:
-        msg += "🏢 *BY DEPARTMENT*\n"
+        msg += "*BY DEPARTMENT*\n"
         msg += "─────────────────────────\n"
         for dept, liters in sorted(stats['dept_breakdown'].items(), key=lambda x: -x[1]):
             pct = (liters / stats['total_liters'] * 100) if stats['total_liters'] > 0 else 0
-            msg += f"• {dept}: {liters:,.0f} L ({pct:.1f}%)\n"
+            msg += f"- {dept}: {liters:,.0f} L ({pct:.1f}%)\n"
         msg += "\n"
     
     # Top 5 vehicles
     if stats.get('car_breakdown'):
-        msg += "🔝 *TOP 5 VEHICLES*\n"
+        msg += "*TOP 5 VEHICLES*\n"
         msg += "─────────────────────────\n"
         for i, (car, liters) in enumerate(list(stats['car_breakdown'].items())[:5], 1):
             msg += f"{i}. {car}: {liters:,.2f} L\n"
@@ -557,27 +557,27 @@ def format_monthly_summary(stats: Dict) -> str:
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     
     # Performance highlights
-    msg += "🌟 *HIGHLIGHTS*\n"
+    msg += "*HIGHLIGHTS*\n"
     msg += "─────────────────────────\n"
     
     if stats.get('top_consumer'):
-        msg += f"🏆 Top Consumer: {stats['top_consumer']['car']}\n"
+        msg += f"Top Consumer: {stats['top_consumer']['car']}\n"
     
     if stats.get('most_distance'):
-        msg += f"🛣️ Most Active: {stats['most_distance']['car']}\n"
+        msg += f"Most Active: {stats['most_distance']['car']}\n"
     
     if stats.get('best_efficiency'):
-        msg += f"✅ Most Efficient: {stats['best_efficiency']['car']}\n"
+        msg += f"Most Efficient: {stats['best_efficiency']['car']}\n"
     
     if stats.get('worst_efficiency'):
-        msg += f"⚠️ Needs Review: {stats['worst_efficiency']['car']}\n"
+        msg += f"[!] Needs Review: {stats['worst_efficiency']['car']}\n"
     
     if stats.get('most_fueled'):
         mf = stats['most_fueled']
-        msg += f"🔄 Most Refueled: {mf['car']} ({mf['count']}x)\n"
+        msg += f"Most Refueled: {mf['car']} ({mf['count']}x)\n"
     
     msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"_Monthly report • {now.strftime('%B %Y')}_"
+    msg += f"_Monthly report - {now.strftime('%B %Y')}_"
     
     return msg
 
@@ -637,7 +637,7 @@ def get_car_summary(plate: str, days: int = 30) -> Tuple[Dict, str]:
     
     excel_path = get_excel_path()
     if not excel_path or not excel_path.exists():
-        return None, f"❌ Excel file not found"
+        return None, f"[ERROR] Excel file not found"
     
     try:
         wb = load_workbook(excel_path, read_only=True)
@@ -673,7 +673,7 @@ def get_car_summary(plate: str, days: int = 30) -> Tuple[Dict, str]:
         wb.close()
         
         if not records:
-            return None, f"📋 No records found for *{normalized_plate}* in the last {days} days."
+            return None, f"[INFO] No records found for *{normalized_plate}* in the last {days} days."
         
         # Calculate car-specific stats
         total_liters = 0.0
@@ -735,38 +735,38 @@ def get_car_summary(plate: str, days: int = 30) -> Tuple[Dict, str]:
         }
         
         # Format message
-        msg = f"🚗 *VEHICLE SUMMARY: {normalized_plate}*\n"
+        msg = f"*VEHICLE SUMMARY: {normalized_plate}*\n"
         msg += f"━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg += f"_Last {days} days_\n\n"
         
-        msg += f"📊 *OVERVIEW*\n"
-        msg += f"• Fuel Records: {len(records)}\n"
-        msg += f"• Total Fuel: {total_liters:,.1f} L\n"
-        msg += f"• Total Spent: KSH {total_amount:,.0f}\n"
+        msg += f"*OVERVIEW*\n"
+        msg += f"- Fuel Records: {len(records)}\n"
+        msg += f"- Total Fuel: {total_liters:,.1f} L\n"
+        msg += f"- Total Spent: KSH {total_amount:,.0f}\n"
         
         if distance > 0:
-            msg += f"• Distance: {distance:,} km\n"
-            msg += f"• Efficiency: {efficiency:.1f} km/L\n"
+            msg += f"- Distance: {distance:,} km\n"
+            msg += f"- Efficiency: {efficiency:.1f} km/L\n"
         
-        msg += f"\n⛽ *FUEL BREAKDOWN*\n"
+        msg += f"\n*FUEL BREAKDOWN*\n"
         for fuel_type, liters in sorted(fuel_types.items(), key=lambda x: -x[1]):
             pct = (liters / total_liters * 100) if total_liters > 0 else 0
-            msg += f"• {fuel_type}: {liters:,.1f} L ({pct:.0f}%)\n"
+            msg += f"- {fuel_type}: {liters:,.1f} L ({pct:.0f}%)\n"
         
         if odometer_readings:
-            msg += f"\n📏 *ODOMETER*\n"
-            msg += f"• First: {min(odometer_readings):,} km\n"
-            msg += f"• Latest: {max(odometer_readings):,} km\n"
+            msg += f"\n*ODOMETER*\n"
+            msg += f"- First: {min(odometer_readings):,} km\n"
+            msg += f"- Latest: {max(odometer_readings):,} km\n"
         
         if drivers:
-            msg += f"\n👤 *DRIVER(S)*\n"
+            msg += f"\n*DRIVER(S)*\n"
             for driver in sorted(drivers):
-                msg += f"• {driver}\n"
+                msg += f"- {driver}\n"
         
         if departments:
-            msg += f"\n🏢 *DEPARTMENT(S)*\n"
+            msg += f"\n*DEPARTMENT(S)*\n"
             for dept in sorted(departments):
-                msg += f"• {dept}\n"
+                msg += f"- {dept}\n"
         
         msg += f"\n━━━━━━━━━━━━━━━━━━━━━━━"
         
@@ -774,7 +774,7 @@ def get_car_summary(plate: str, days: int = 30) -> Tuple[Dict, str]:
         
     except Exception as e:
         logger.error(f"Error getting car summary: {e}")
-        return None, f"❌ Error getting summary: {e}"
+        return None, f"[ERROR] Error getting summary: {e}"
 
 
 CAR_SUMMARY_OUTPUT_PATH = ROOT_DIR / 'data' / 'car_summary.json'

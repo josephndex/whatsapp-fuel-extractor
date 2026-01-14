@@ -18,6 +18,59 @@ const path = require('path');
 const chokidar = require('chokidar');
 const http = require('http');
 
+// Try to get Chromium path from puppeteer
+let chromiumPath = null;
+try {
+    const puppeteer = require('puppeteer');
+    chromiumPath = puppeteer.executablePath();
+    if (chromiumPath && fs.existsSync(chromiumPath)) {
+        console.log('[CHROMIUM] Found at:', chromiumPath);
+    } else {
+        chromiumPath = null;
+    }
+} catch (err) {
+    // Puppeteer not installed or Chromium not found
+    console.log('[WARN] Puppeteer Chromium not found, will try system Chrome...');
+}
+
+// Fallback: Try to find system Chrome/Chromium
+function findSystemChrome() {
+    const possiblePaths = process.platform === 'win32' ? [
+        // Windows paths
+        path.join(process.env.PROGRAMFILES || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.PROGRAMFILES || '', 'Chromium', 'Application', 'chrome.exe'),
+        path.join(process.env.LOCALAPPDATA || '', 'Chromium', 'Application', 'chrome.exe'),
+    ] : process.platform === 'darwin' ? [
+        // macOS paths
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    ] : [
+        // Linux paths
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/snap/bin/chromium',
+    ];
+    
+    for (const p of possiblePaths) {
+        if (p && fs.existsSync(p)) {
+            return p;
+        }
+    }
+    return null;
+}
+
+// Use puppeteer's Chromium or fallback to system Chrome
+if (!chromiumPath) {
+    chromiumPath = findSystemChrome();
+    if (chromiumPath) {
+        console.log('[CHROMIUM] Using system Chrome at:', chromiumPath);
+    }
+}
+
 // Paths
 const ROOT_DIR = path.join(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT_DIR, 'config.json');
@@ -61,7 +114,7 @@ function getCondaPaths() {
     }
     
     if (!condaBase) {
-        console.log('⚠️ Could not find conda installation');
+        console.log('[WARN] Could not find conda installation');
         return null;
     }
     
@@ -96,7 +149,7 @@ function buildPythonCommand(scriptPath, ...args) {
     }
     
     // Last resort: assume conda is in PATH (may not work in all shells)
-    console.log('⚠️ Using fallback conda command - may not work if conda not in PATH');
+    console.log('[WARN] Using fallback conda command - may not work if conda not in PATH');
     return `conda run -n ${CONDA_ENV} --no-capture-output python "${scriptPath}" ${argsStr}`.trim();
 }
 
@@ -114,8 +167,8 @@ function loadConfig() {
         const rawConfig = fs.readFileSync(CONFIG_PATH, 'utf8');
         return JSON.parse(rawConfig);
     } catch (error) {
-        console.error('❌ Error loading config.json:', error.message);
-        console.log('\n📝 Please ensure config.json exists with the following structure:');
+        console.error('[ERROR] Error loading config.json:', error.message);
+        console.log('\n[INFO] Please ensure config.json exists with the following structure:';
         console.log(JSON.stringify({
             whatsapp: { phoneNumber: "your-phone", groupName: "Your Group Name" },
             output: { excelFolder: "./data/output", excelFileName: "fuel_records.xlsx" }
@@ -145,7 +198,7 @@ function validateConfig(cfg) {
  * Clear session to force new QR authentication
  */
 function clearSession() {
-    console.log('🔄 Clearing existing session for new setup...');
+    console.log('[INFO] Clearing existing session for new setup...');
     try {
         if (fs.existsSync(SESSION_PATH)) {
             fs.rmSync(SESSION_PATH, { recursive: true, force: true });
@@ -234,7 +287,7 @@ function isMessageAlreadyProcessed(msgId) {
  * Always checks recent messages and filters out already-processed ones
  */
 async function fetchMissedMessages(chatId) {
-    console.log('\n📥 Checking for unprocessed messages...');
+    console.log('\n[INFO] Checking for unprocessed messages...');
     
     try {
         const chat = await client.getChatById(chatId);
@@ -300,24 +353,24 @@ async function fetchMissedMessages(chatId) {
             // Save message for processing
             if (saveMessage(messageData)) {
                 processedCount++;
-                console.log(`   📨 Found unprocessed: ${senderName} at ${new Date(msg.timestamp * 1000).toLocaleString()}`);
+                console.log(`   [MSG] Found unprocessed: ${senderName} at ${new Date(msg.timestamp * 1000).toLocaleString()}`);
             }
         }
         
         // Show summary
         if (processedCount > 0) {
-            console.log(`\n   ✅ Captured ${processedCount} new fuel report(s) for processing`);
+            console.log(`\n   [OK] Captured ${processedCount} new fuel report(s) for processing`);
             
             // Notify the group about missed messages being processed
-            const missedMsg = `📥 *PROCESSING MISSED MESSAGES*\n\n` +
-                `📨 Found ${processedCount} unprocessed fuel report(s)\n` +
-                `⏳ Processing now...\n\n` +
+            const missedMsg = `[INBOX] *PROCESSING MISSED MESSAGES*\n\n` +
+                `[MSG] Found ${processedCount} unprocessed fuel report(s)\n` +
+                `[WAIT] Processing now...\n\n` +
                 `_You will receive confirmations or error messages shortly_`;
             await sendGroupMessage(missedMsg);
         } else if (alreadyProcessedCount > 0) {
-            console.log(`   ✅ Found ${totalFuelReports} fuel report(s), all already processed`);
+            console.log(`   [OK] Found ${totalFuelReports} fuel report(s), all already processed`);
         } else {
-            console.log('   ✅ No fuel reports found in recent messages');
+            console.log('   [OK] No fuel reports found in recent messages');
         }
         
         // Update last processed time to now
@@ -326,9 +379,59 @@ async function fetchMissedMessages(chatId) {
         return processedCount;
         
     } catch (error) {
-        console.error('   ❌ Error fetching messages:', error.message);
+        console.error('   [ERROR] Error fetching messages:', error.message);
         updateLastProcessedTime(Math.floor(Date.now() / 1000));
         return 0;
+    }
+}
+
+/**
+ * Safe JSON file operations with locking
+ */
+function safeReadJSON(filepath, defaultValue = null) {
+    try {
+        if (!fs.existsSync(filepath)) {
+            return defaultValue;
+        }
+        const content = fs.readFileSync(filepath, 'utf8');
+        if (!content.trim()) {
+            return defaultValue;
+        }
+        return JSON.parse(content);
+    } catch (error) {
+        console.error(`[WARN] Error reading JSON from ${filepath}:`, error.message);
+        // Create backup of corrupted file
+        try {
+            const backupPath = filepath + '.corrupted.' + Date.now();
+            fs.copyFileSync(filepath, backupPath);
+            console.log(`[BACKUP] Created backup of corrupted file: ${backupPath}`);
+        } catch (e) {}
+        return defaultValue;
+    }
+}
+
+function safeWriteJSON(filepath, data, indent = 2) {
+    const tempPath = filepath + '.tmp';
+    try {
+        // Ensure directory exists
+        const dir = path.dirname(filepath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        // Write to temp file first (atomic write pattern)
+        fs.writeFileSync(tempPath, JSON.stringify(data, null, indent));
+        // Rename temp to actual (atomic on most filesystems)
+        fs.renameSync(tempPath, filepath);
+        return true;
+    } catch (error) {
+        console.error(`[ERROR] Error writing JSON to ${filepath}:`, error.message);
+        // Clean up temp file if exists
+        try {
+            if (fs.existsSync(tempPath)) {
+                fs.unlinkSync(tempPath);
+            }
+        } catch (e) {}
+        return false;
     }
 }
 
@@ -340,12 +443,21 @@ function saveMessage(messageData) {
     const filename = `msg_${timestamp}_${Math.random().toString(36).substr(2, 9)}.json`;
     const filepath = path.join(RAW_MESSAGES_PATH, filename);
     
-    try {
-        fs.writeFileSync(filepath, JSON.stringify(messageData, null, 2));
-        console.log(`💾 Saved message: ${filename}`);
+    // Ensure raw_messages directory exists
+    if (!fs.existsSync(RAW_MESSAGES_PATH)) {
+        try {
+            fs.mkdirSync(RAW_MESSAGES_PATH, { recursive: true });
+        } catch (error) {
+            console.error('[ERROR] Error creating raw_messages directory:', error.message);
+            return false;
+        }
+    }
+    
+    if (safeWriteJSON(filepath, messageData)) {
+        console.log(`[SAVED] Saved message: ${filename}`);
         return true;
-    } catch (error) {
-        console.error('❌ Error saving message:', error.message);
+    } else {
+        console.error('[ERROR] Error saving message');
         return false;
     }
 }
@@ -357,15 +469,15 @@ async function findTargetGroup() {
     if (!isReady || !client) return null;
     
     const groupName = config.whatsapp.groupName.toLowerCase().trim();
-    console.log(`🔍 Searching for group: "${config.whatsapp.groupName}"`);
+    console.log(`[SEARCH] Searching for group: "${config.whatsapp.groupName}"`);
     
     try {
         const chats = await client.getChats();
         const groups = chats.filter(chat => chat.isGroup);
         
-        console.log(`📋 Found ${groups.length} groups:`);
+        console.log(`[LIST] Found ${groups.length} groups:`);
         groups.forEach((g, i) => {
-            const match = g.name.toLowerCase().trim() === groupName ? ' ✅ TARGET' : '';
+            const match = g.name.toLowerCase().trim() === groupName ? ' [TARGET]' : '';
             console.log(`   ${i + 1}. ${g.name}${match}`);
         });
         
@@ -374,16 +486,16 @@ async function findTargetGroup() {
         );
         
         if (targetGroup) {
-            console.log(`\n✅ Found target group: "${targetGroup.name}" (ID: ${targetGroup.id._serialized})`);
+            console.log(`\n[OK] Found target group: "${targetGroup.name}" (ID: ${targetGroup.id._serialized})`);
             return targetGroup.id._serialized;
         } else {
-            console.log(`\n⚠️ Group "${config.whatsapp.groupName}" not found!`);
+            console.log(`\n[WARN] Group "${config.whatsapp.groupName}" not found!`);
             console.log('   Make sure the bot phone number is a member of this group.');
             console.log('   Group names are case-insensitive but must match exactly.');
             return null;
         }
     } catch (error) {
-        console.error('❌ Error finding group:', error.message);
+        console.error('[ERROR] Error finding group:', error.message);
         return null;
     }
 }
@@ -440,12 +552,12 @@ function getSystemStatus() {
         }
     } catch (e) {}
     
-    let status = `📊 *SYSTEM STATUS*\n`;
-    status += `━━━━━━━━━━━━━━━━━━━\n\n`;
-    status += `✅ *Listener:* Running\n`;
-    status += `⏱️ *Uptime:* ${hours}h ${minutes}m ${seconds}s\n`;
-    status += `📱 *Group:* ${config.whatsapp.groupName}\n\n`;
-    status += `📁 *Message Queue:*\n`;
+    let status = `[STATUS] *SYSTEM STATUS*\n`;
+    status += `----------------------------\n\n`;
+    status += `[OK] *Listener:* Running\n`;
+    status += `[TIME] *Uptime:* ${hours}h ${minutes}m ${seconds}s\n`;
+    status += `[GROUP] *Group:* ${config.whatsapp.groupName}\n\n`;
+    status += `[QUEUE] *Message Queue:*\n`;
     status += `   Pending: ${rawMsgCount}\n`;
     status += `   Processed: ${processedCount}\n`;
     status += `   Errors: ${errorsCount}\n`;
@@ -467,8 +579,8 @@ function getFleetList() {
             const plates = match[1].match(/'([A-Z0-9]+)'/g);
             if (plates) {
                 const cleanPlates = plates.map(p => p.replace(/'/g, '')).sort();
-                let msg = `🚗 *FLEET VEHICLES* (${cleanPlates.length})\n`;
-                msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+                let msg = `[FLEET] *FLEET VEHICLES* (${cleanPlates.length})\n`;
+                msg += `----------------------------\n\n`;
                 
                 // Group in columns of 3
                 for (let i = 0; i < cleanPlates.length; i += 3) {
@@ -479,9 +591,9 @@ function getFleetList() {
                 return msg;
             }
         }
-        return '❌ Could not read fleet list';
+        return '[ERROR] Could not read fleet list';
     } catch (e) {
-        return '❌ Error reading fleet list: ' + e.message;
+        return '[ERROR] Error reading fleet list: ' + e.message;
     }
 }
 
@@ -493,18 +605,18 @@ function getPendingApprovals() {
     
     try {
         if (!fs.existsSync(pendingFile)) {
-            return '✅ No pending approvals';
+            return '[OK] No pending approvals';
         }
         
         const approvals = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
         const pending = approvals.filter(a => a.status === 'pending');
         
         if (pending.length === 0) {
-            return '✅ No pending approvals';
+            return '[OK] No pending approvals';
         }
         
-        let msg = `⏳ *PENDING APPROVALS* (${pending.length})\n`;
-        msg += `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        let msg = `[PENDING] *PENDING APPROVALS* (${pending.length})\n`;
+        msg += `----------------------------\n\n`;
         
         for (const approval of pending) {
             const record = approval.record || {};
@@ -522,7 +634,7 @@ function getPendingApprovals() {
         
         return msg;
     } catch (e) {
-        return '❌ Error reading approvals: ' + e.message;
+        return '[ERROR] Error reading approvals: ' + e.message;
     }
 }
 
@@ -534,18 +646,18 @@ async function processApproval(approvalId, approve) {
     
     try {
         if (!fs.existsSync(pendingFile)) {
-            return '❌ No pending approvals found';
+            return '[ERROR] No pending approvals found';
         }
         
         let approvals = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
         const approval = approvals.find(a => a.id === approvalId);
         
         if (!approval) {
-            return `❌ Approval ID *${approvalId}* not found`;
+            return `[ERROR] Approval ID *${approvalId}* not found`;
         }
         
         if (approval.status !== 'pending') {
-            return `⚠️ Approval *${approvalId}* already ${approval.status}`;
+            return `[WARN] Approval *${approvalId}* already ${approval.status}`;
         }
         
         if (approve) {
@@ -580,7 +692,7 @@ async function processApproval(approvalId, approve) {
             
             fs.writeFileSync(pendingFile, JSON.stringify(approvals, null, 2));
             
-            return `✅ Approved: *${approvalId}*\n\nThe record will be processed shortly.`;
+            return `[APPROVED] Approved: *${approvalId}*\n\nThe record will be processed shortly.`;
         } else {
             // Mark as rejected
             approval.status = 'rejected';
@@ -588,10 +700,10 @@ async function processApproval(approvalId, approve) {
             
             fs.writeFileSync(pendingFile, JSON.stringify(approvals, null, 2));
             
-            return `🚫 Rejected: *${approvalId}*\n\nThe record has been discarded.`;
+            return `[REJECTED] Rejected: *${approvalId}*\n\nThe record has been discarded.`;
         }
     } catch (e) {
-        return '❌ Error processing approval: ' + e.message;
+        return '[ERROR] Error processing approval: ' + e.message;
     }
 }
 
@@ -607,7 +719,7 @@ function addVehicleToFleet(plate) {
         
         // Check if already exists
         if (content.includes(`'${normalizedPlate}'`)) {
-            return `⚠️ Vehicle *${normalizedPlate}* is already in the fleet list`;
+            return `[WARN] Vehicle *${normalizedPlate}* is already in the fleet list`;
         }
         
         // Find the ALLOWED_PLATES set and add the new plate
@@ -618,12 +730,12 @@ function addVehicleToFleet(plate) {
             content = content.replace(match[0], `ALLOWED_PLATES = {${newPlates}}`);
             
             fs.writeFileSync(fleetFile, content);
-            return `✅ Vehicle *${normalizedPlate}* added to fleet list`;
+            return `[ADDED] Vehicle *${normalizedPlate}* added to fleet list`;
         }
         
-        return '❌ Could not find ALLOWED_PLATES in processor.py';
+        return '[ERROR] Could not find ALLOWED_PLATES in processor.py';
     } catch (e) {
-        return '❌ Error adding vehicle: ' + e.message;
+        return '[ERROR] Error adding vehicle: ' + e.message;
     }
 }
 
@@ -639,7 +751,7 @@ function removeVehicleFromFleet(plate) {
         
         // Check if plate exists
         if (!content.includes(`'${normalizedPlate}'`)) {
-            return `⚠️ Vehicle *${normalizedPlate}* is not in the fleet list`;
+            return `[WARN] Vehicle *${normalizedPlate}* is not in the fleet list`;
         }
         
         // Find and remove the plate from ALLOWED_PLATES set
@@ -657,12 +769,12 @@ function removeVehicleFromFleet(plate) {
             content = content.replace(match[0], `ALLOWED_PLATES = {${platesStr}}`);
             
             fs.writeFileSync(fleetFile, content);
-            return `✅ Vehicle *${normalizedPlate}* removed from fleet list`;
+            return `[REMOVED] Vehicle *${normalizedPlate}* removed from fleet list`;
         }
         
-        return '❌ Could not find ALLOWED_PLATES in processor.py';
+        return '[ERROR] Could not find ALLOWED_PLATES in processor.py';
     } catch (e) {
-        return '❌ Error removing vehicle: ' + e.message;
+        return '[ERROR] Error removing vehicle: ' + e.message;
     }
 }
 
@@ -776,7 +888,7 @@ async function getGroupAdminPhones() {
  */
 async function sendGroupMessageWithMentions(message, mentionPhones = []) {
     if (!client || !isReady || !targetGroupId) {
-        console.log('⚠️ Cannot send message: client not ready or no target group');
+        console.log('[WARN] Cannot send message: client not ready or no target group');
         return false;
     }
     
@@ -813,10 +925,10 @@ async function sendGroupMessageWithMentions(message, mentionPhones = []) {
         }
         
         lastMessageTime = Date.now();
-        console.log('📤 Sent message to group' + (mentionPhones.length > 0 ? ` (with ${mentionPhones.length} mentions)` : ''));
+        console.log('[SENT] Sent message to group' + (mentionPhones.length > 0 ? ` (with ${mentionPhones.length} mentions)` : ''));
         return true;
     } catch (error) {
-        console.error('❌ Error sending message:', error.message);
+        console.error('[ERROR] Error sending message:', error.message);
         return false;
     }
 }
@@ -884,7 +996,7 @@ async function isGroupAdmin(msg) {
             }
         }
         
-        console.log(`🔍 Checking admin status for: ${senderId} (fromMe: ${msg.fromMe}, phone: ${senderPhone || 'unknown'})`);
+        console.log(`[CHECK] Checking admin status for: ${senderId} (fromMe: ${msg.fromMe}, phone: ${senderPhone || 'unknown'})`);
         
         const participants = chat.participants || [];
         
@@ -894,7 +1006,7 @@ async function isGroupAdmin(msg) {
             
             if (participantId === senderId) {
                 const isAdminUser = participant.isAdmin || participant.isSuperAdmin;
-                console.log(`✅ Found participant (exact match): ${participantId}, isAdmin: ${isAdminUser}`);
+                console.log(`[OK] Found participant (exact match): ${participantId}, isAdmin: ${isAdminUser}`);
                 return isAdminUser;
             }
         }
@@ -910,7 +1022,7 @@ async function isGroupAdmin(msg) {
                     participantPhone === senderPhone.replace(/^\+/, '') ||
                     senderPhone === participantPhone.replace(/^\+/, '')) {
                     const isAdminUser = participant.isAdmin || participant.isSuperAdmin;
-                    console.log(`✅ Found participant (phone match): ${participantId}, isAdmin: ${isAdminUser}`);
+                    console.log(`[OK] Found participant (phone match): ${participantId}, isAdmin: ${isAdminUser}`);
                     return isAdminUser;
                 }
             }
@@ -918,7 +1030,7 @@ async function isGroupAdmin(msg) {
         
         // If sender uses @lid format and we still haven't matched, try more methods
         if (senderId?.includes('@lid')) {
-            console.log(`🔄 Sender uses LID format, attempting additional resolution...`);
+            console.log(`[INFO] Sender uses LID format, attempting additional resolution...`);
             
             // Check if any participant has matching LID in their id object
             const senderLidUser = senderId.split('@')[0];
@@ -929,7 +1041,7 @@ async function isGroupAdmin(msg) {
                         const pLidUser = participant.id.lid.split('@')[0];
                         if (pLidUser === senderLidUser) {
                             const isAdminUser = participant.isAdmin || participant.isSuperAdmin;
-                            console.log(`✅ Found participant (LID in id): ${participant.id._serialized}, isAdmin: ${isAdminUser}`);
+                            console.log(`[OK] Found participant (LID in id): ${participant.id._serialized}, isAdmin: ${isAdminUser}`);
                             return isAdminUser;
                         }
                     }
@@ -941,7 +1053,7 @@ async function isGroupAdmin(msg) {
                 const contact = await msg.getContact();
                 if (contact && (contact.number || (contact.id && contact.id.user))) {
                     const phoneNumber = contact.number || contact.id.user;
-                    console.log(`📞 Resolved LID to phone: ${phoneNumber}`);
+                    console.log(`[PHONE] Resolved LID to phone: ${phoneNumber}`);
                     
                     // Search participants by phone number
                     for (const participant of participants) {
@@ -952,13 +1064,13 @@ async function isGroupAdmin(msg) {
                             participantPhone === phoneNumber.replace(/^\+/, '') ||
                             phoneNumber === participantPhone) {
                             const isAdminUser = participant.isAdmin || participant.isSuperAdmin;
-                            console.log(`✅ Found participant (via contact phone): ${participantId}, isAdmin: ${isAdminUser}`);
+                            console.log(`[OK] Found participant (via contact phone): ${participantId}, isAdmin: ${isAdminUser}`);
                             return isAdminUser;
                         }
                     }
                 }
             } catch (contactErr) {
-                console.log(`⚠️ Could not resolve contact: ${contactErr.message}`);
+                console.log(`[WARN] Could not resolve contact: ${contactErr.message}`);
             }
         }
         
@@ -970,15 +1082,15 @@ async function isGroupAdmin(msg) {
             
             if (senderIdPhone === participantPhone) {
                 const isAdminUser = participant.isAdmin || participant.isSuperAdmin;
-                console.log(`✅ Found participant (phone match): ${participantId}, isAdmin: ${isAdminUser}`);
+                console.log(`[OK] Found participant (phone match): ${participantId}, isAdmin: ${isAdminUser}`);
                 return isAdminUser;
             }
         }
         
         // Not found - log for debugging with more detail
-        console.log(`⚠️ Sender ${senderId} not found in participants.`);
+        console.log(`[WARN] Sender ${senderId} not found in participants.`);
         if (senderPhone) {
-            console.log(`   📞 Extracted phone: ${senderPhone}`);
+            console.log(`   [PHONE] Extracted phone: ${senderPhone}`);
         }
         console.log(`   Sample participants:`);
         participants.slice(0, 5).forEach(p => {
@@ -997,7 +1109,7 @@ async function isGroupAdmin(msg) {
                 }
             }
             if (Object.keys(found).length > 0) {
-                console.log(`   📋 Available msg._data fields:`, found);
+                console.log(`   [DEBUG] Available msg._data fields:`, found);
             }
         }
         
@@ -1012,38 +1124,38 @@ async function isGroupAdmin(msg) {
  * Get the fuel update guide message for !how command (available to everyone)
  */
 function getFuelUpdateGuide() {
-    let guide = `📋 *HOW TO SEND A FUEL UPDATE*\n`;
-    guide += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    let guide = `[GUIDE] *HOW TO SEND A FUEL UPDATE*\n`;
+    guide += `------------------------------------\n\n`;
     
     guide += `Your message *MUST* start with:\n`;
     guide += `*FUEL UPDATE*\n\n`;
     
     guide += `Then include *ALL* these fields:\n\n`;
     
-    guide += `📌 *DEPARTMENT:* Your department\n`;
+    guide += `[1] *DEPARTMENT:* Your department\n`;
     guide += `   _(e.g., LOGISTICS, SALES, OPERATIONS)_\n\n`;
     
-    guide += `👤 *DRIVER:* Your name\n`;
+    guide += `[2] *DRIVER:* Your name\n`;
     guide += `   _(e.g., John Kamau)_\n\n`;
     
-    guide += `🚗 *CAR:* Vehicle registration plate\n`;
+    guide += `[3] *CAR:* Vehicle registration plate\n`;
     guide += `   _(e.g., KCA 542Q)_\n\n`;
     
-    guide += `⛽ *LITERS:* Fuel amount in liters\n`;
+    guide += `[4] *LITERS:* Fuel amount in liters\n`;
     guide += `   _(e.g., 45.5)_\n\n`;
     
-    guide += `💰 *AMOUNT:* Cost in KSH\n`;
+    guide += `[5] *AMOUNT:* Cost in KSH\n`;
     guide += `   _(e.g., 7,500)_\n\n`;
     
-    guide += `🔘 *TYPE:* Fuel type\n`;
+    guide += `[6] *TYPE:* Fuel type\n`;
     guide += `   _(DIESEL, PETROL, SUPER, V-POWER, or UNLEADED)_\n\n`;
     
-    guide += `📊 *ODOMETER:* Current odometer reading\n`;
+    guide += `[7] *ODOMETER:* Current odometer reading\n`;
     guide += `   _(e.g., 125,430)_\n\n`;
     
-    guide += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-    guide += `✅ *EXAMPLE MESSAGE:*\n`;
-    guide += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    guide += `------------------------------------\n`;
+    guide += `[OK] *EXAMPLE MESSAGE:*\n`;
+    guide += `------------------------------------\n\n`;
     
     guide += `FUEL UPDATE\n`;
     guide += `DEPARTMENT: LOGISTICS\n`;
@@ -1054,16 +1166,16 @@ function getFuelUpdateGuide() {
     guide += `TYPE: DIESEL\n`;
     guide += `ODOMETER: 125,430\n\n`;
     
-    guide += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-    guide += `⚠️ *IMPORTANT NOTES:*\n`;
-    guide += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    guide += `------------------------------------\n`;
+    guide += `[!] *IMPORTANT NOTES:*\n`;
+    guide += `------------------------------------\n\n`;
     
-    guide += `• Message MUST start with *FUEL UPDATE*\n`;
-    guide += `• ALL 7 fields are *required*\n`;
-    guide += `• Vehicle must be in approved fleet list\n`;
-    guide += `• Odometer must be higher than last reading\n`;
-    guide += `• Fields can be in any order\n`;
-    guide += `• You can use : or - or = as separator\n\n`;
+    guide += `- Message MUST start with *FUEL UPDATE*\n`;
+    guide += `- ALL 7 fields are *required*\n`;
+    guide += `- Vehicle must be in approved fleet list\n`;
+    guide += `- Odometer must be higher than last reading\n`;
+    guide += `- Fields can be in any order\n`;
+    guide += `- You can use : or - or = as separator\n\n`;
     
     guide += `_Type !how anytime to see this guide again._`;
     
@@ -1080,7 +1192,7 @@ async function handlePublicCommand(msg, body) {
     if (command === '!how') {
         const guide = getFuelUpdateGuide();
         await sendGroupMessage(guide);
-        console.log(`📖 Public command: !how`);
+        console.log(`[CMD] Public command: !how`);
         return true;
     }
     
@@ -1103,8 +1215,8 @@ async function handleAdminCommand(msg, body) {
     // Check if sender is a group admin
     const isAdmin = await isGroupAdmin(msg);
     if (!isAdmin) {
-        await sendGroupMessage('🚫 *Access Denied*\n\nOnly group admins can use admin commands.');
-        console.log(`⛔ Non-admin tried to use: ${command}`);
+        await sendGroupMessage('[DENIED] *Access Denied*\n\nOnly group admins can use admin commands.');
+        console.log(`[BLOCKED] Non-admin tried to use: ${command}`);
         return;
     }
     
@@ -1140,18 +1252,18 @@ async function handleAdminCommand(msg, body) {
                 const summaryFile = path.join(ROOT_DIR, 'data', 'weekly_summary.json');
                 if (fs.existsSync(summaryFile)) {
                     const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
-                    response = summary.message || '📊 Summary generated';
+                    response = summary.message || '[REPORT] Summary generated';
                 } else {
-                    response = '❌ Summary file not found';
+                    response = '[ERROR] Summary file not found';
                 }
             } catch (e) {
-                response = '❌ Error generating summary: ' + e.message;
+                response = '[ERROR] Error generating summary: ' + e.message;
             }
             break;
             
         case '!add':
             if (parts.length < 2) {
-                response = '⚠️ Usage: !add KXX 123Y';
+                response = '[USAGE] Usage: !add KXX 123Y';
             } else {
                 const plate = parts.slice(1).join('');
                 response = addVehicleToFleet(plate);
@@ -1160,7 +1272,7 @@ async function handleAdminCommand(msg, body) {
             
         case '!remove':
             if (parts.length < 2) {
-                response = '⚠️ Usage: !remove KXX 123Y';
+                response = '[USAGE] Usage: !remove KXX 123Y';
             } else {
                 const plate = parts.slice(1).join('');
                 response = removeVehicleFromFleet(plate);
@@ -1173,7 +1285,7 @@ async function handleAdminCommand(msg, body) {
         
         case '!car':
             if (parts.length < 2) {
-                response = '⚠️ Usage: !car KXX123Y [days]\n\nExample: !car KCA542Q 30\nExample: !car KCZ 181P 60';
+                response = '[USAGE] Usage: !car KXX123Y [days]\n\nExample: !car KCA542Q 30\nExample: !car KCZ 181P 60';
             } else {
                 // Handle plates with spaces: !car KCZ 181P 30 or !car KCZ181P 30
                 // The last part might be the days number, or part of the plate
@@ -1195,19 +1307,19 @@ async function handleAdminCommand(msg, body) {
                 try {
                     const { execSync } = require('child_process');
                     const cmd = buildPythonCommand(carSummaryScript, '--car', carPlate, carDays.toString());
-                    console.log(`🚗 Running car summary for ${carPlate} (${carDays} days)`);
+                    console.log(`[CAR] Running car summary for ${carPlate} (${carDays} days)`);
                     execSync(cmd, { cwd: ROOT_DIR, shell: true });
                     
                     const carSummaryFile = path.join(ROOT_DIR, 'data', 'car_summary.json');
                     if (fs.existsSync(carSummaryFile)) {
                         const carSummary = JSON.parse(fs.readFileSync(carSummaryFile, 'utf8'));
-                        response = carSummary.message || '📋 No data found for this vehicle';
+                        response = carSummary.message || '[INFO] No data found for this vehicle';
                     } else {
-                        response = '❌ Could not generate car summary';
+                        response = '[ERROR] Could not generate car summary';
                     }
                 } catch (e) {
                     console.error('Car summary error:', e.message);
-                    response = '❌ Error: ' + e.message;
+                    response = '[ERROR] Error: ' + e.message;
                 }
             }
             break;
@@ -1218,7 +1330,7 @@ async function handleAdminCommand(msg, body) {
         
         case '!approve':
             if (parts.length < 2) {
-                response = '⚠️ Usage: !approve <ID>\n\nUse !pending to see pending approvals.';
+                response = '[USAGE] Usage: !approve <ID>\n\nUse !pending to see pending approvals.';
             } else {
                 const approvalId = parts[1];
                 response = await processApproval(approvalId, true);
@@ -1227,7 +1339,7 @@ async function handleAdminCommand(msg, body) {
         
         case '!reject':
             if (parts.length < 2) {
-                response = '⚠️ Usage: !reject <ID>\n\nUse !pending to see pending approvals.';
+                response = '[USAGE] Usage: !reject <ID>\n\nUse !pending to see pending approvals.';
             } else {
                 const rejectId = parts[1];
                 response = await processApproval(rejectId, false);
@@ -1235,8 +1347,8 @@ async function handleAdminCommand(msg, body) {
             break;
             
         case '!help':
-            response = `📖 *ADMIN COMMANDS*\n`;
-            response += `━━━━━━━━━━━━━━━━━━━\n\n`;
+            response = `[HELP] *ADMIN COMMANDS*\n`;
+            response += `----------------------------\n\n`;
             response += `*!status* - System health check\n`;
             response += `*!summary* - Get weekly summary\n`;
             response += `*!summary daily* - Get today's summary\n`;
@@ -1252,9 +1364,9 @@ async function handleAdminCommand(msg, body) {
             response += `*!list* - List all fleet vehicles\n`;
             response += `*!help* - Show this help\n\n`;
             response += `_Only group admins can use these commands._\n\n`;
-            response += `━━━━━━━━━━━━━━━━━━━\n`;
-            response += `📢 *PUBLIC COMMANDS*\n`;
-            response += `━━━━━━━━━━━━━━━━━━━\n\n`;
+            response += `----------------------------\n`;
+            response += `[PUBLIC] *PUBLIC COMMANDS*\n`;
+            response += `----------------------------\n\n`;
             response += `*!how* - Guide on sending fuel updates\n`;
             response += `_Available to everyone._`;
             break;
@@ -1266,7 +1378,7 @@ async function handleAdminCommand(msg, body) {
     
     if (response) {
         await sendGroupMessage(response);
-        console.log(`🔧 Admin command: ${command}`);
+        console.log(`[CMD] Admin command: ${command}`);
     }
 }
 
@@ -1310,7 +1422,7 @@ function parseFuelFields(body) {
  * Format a professional confirmation message for successful fuel report capture
  */
 function formatConfirmation(senderName, fields, datetime) {
-    let msg = `✅ *FUEL REPORT LOGGED*\n\n`;
+    let msg = `[LOGGED] *FUEL REPORT LOGGED*\n\n`;
     
     if (fields.driver) msg += `Driver: ${fields.driver}\n`;
     if (fields.car) msg += `Vehicle: ${fields.car}\n`;
@@ -1334,7 +1446,7 @@ const MESSAGE_COOLDOWN_MS = 1000; // 1 second between messages
  */
 async function sendGroupMessage(message) {
     if (!client || !isReady || !targetGroupId) {
-        console.log('⚠️ Cannot send message: client not ready or no target group');
+        console.log('[WARN] Cannot send message: client not ready or no target group');
         return false;
     }
     
@@ -1348,10 +1460,10 @@ async function sendGroupMessage(message) {
     try {
         await client.sendMessage(targetGroupId, message);
         lastMessageTime = Date.now();
-        console.log('📤 Sent message to group');
+        console.log('[SENT] Sent message to group');
         return true;
     } catch (error) {
-        console.error('❌ Error sending message:', error.message);
+        console.error('[ERROR] Error sending message:', error.message);
         return false;
     }
 }
@@ -1417,14 +1529,14 @@ async function checkAndNotifyErrors() {
                 if (senderPhone) {
                     mentionPhones = [senderPhone];
                     message = `@${senderPhone}\n\n` +
-                        `⚠️ *FUEL REPORT ERROR*\n\n` +
+                        `[!] *FUEL REPORT ERROR*\n\n` +
                         `Driver: ${error.driver || 'Unknown'}\n` +
                         `Car: ${error.car || 'Unknown'}\n` +
                         `Issue: ${error.issue}\n\n` +
                         `Please resend with correct details.\n` +
                         `Type *!how* for guidance.`;
                 } else {
-                    message = `⚠️ *FUEL REPORT ERROR*\n\n` +
+                    message = `[!] *FUEL REPORT ERROR*\n\n` +
                         `Driver: ${error.driver || 'Unknown'}\n` +
                         `Car: ${error.car || 'Unknown'}\n` +
                         `Issue: ${error.issue}\n\n` +
@@ -1495,7 +1607,7 @@ async function checkAndSendConfirmations() {
  */
 async function startClient() {
     console.log('\n' + '='.repeat(60));
-    console.log('🚀 WhatsApp Fuel Extractor - Starting...');
+    console.log('[START] WhatsApp Fuel Extractor - Starting...');
     console.log('='.repeat(60) + '\n');
     
     // Load and validate config
@@ -1503,13 +1615,13 @@ async function startClient() {
     const issues = validateConfig(config);
     
     if (issues.length > 0) {
-        console.error('❌ Configuration issues:');
+        console.error('[ERROR] Configuration issues:');
         issues.forEach(issue => console.error(`   - ${issue}`));
-        console.log('\n📝 Please edit config.json and restart.');
+        console.log('\n[INFO] Please edit config.json and restart.');
         process.exit(1);
     }
     
-    console.log('📋 Configuration loaded:');
+    console.log('[CONFIG] Configuration loaded:');
     console.log(`   Phone: ${config.whatsapp.phoneNumber || '(will be set via QR)'}`);
     console.log(`   Group: ${config.whatsapp.groupName}`);
     console.log(`   Output: ${config.output.excelFolder}/${config.output.excelFileName}`);
@@ -1523,6 +1635,24 @@ async function startClient() {
     });
     
     // Create WhatsApp client
+    const puppeteerConfig = {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ]
+    };
+    
+    // Add executable path if we found Chromium
+    if (chromiumPath) {
+        puppeteerConfig.executablePath = chromiumPath;
+    }
+    
     client = new Client({
         authStrategy: new LocalAuth({
             dataPath: SESSION_PATH
@@ -1531,24 +1661,13 @@ async function startClient() {
             type: 'remote',
             remotePath: 'https://raw.githubusercontent.com/nicpanoaea/nicpanoaea.github.io/refs/heads/master/nicpanoaea.github.io/nicpanoaea.html'
         },
-        puppeteer: {
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu'
-            ]
-        }
+        puppeteer: puppeteerConfig
     });
     
     // QR Code event - display for scanning
     client.on('qr', (qr) => {
         console.log('\n' + '='.repeat(60));
-        console.log('📱 SCAN THIS QR CODE WITH YOUR WHATSAPP:');
+        console.log('[QR] SCAN THIS QR CODE WITH YOUR WHATSAPP:');
         console.log('='.repeat(60));
         qrcode.generate(qr, { small: true });
         console.log('='.repeat(60));
@@ -1559,24 +1678,24 @@ async function startClient() {
     // Ready event - client connected
     client.on('ready', async () => {
         isReady = true;
-        console.log('\n✅ WhatsApp client is ready!');
+        console.log('\n[OK] WhatsApp client is ready!');
         
         // Get client info
         const info = client.info;
-        console.log(`📱 Connected as: ${info.pushname} (${info.wid.user})`);
+        console.log(`[CONNECTED] Connected as: ${info.pushname} (${info.wid.user})`);
         
         // Update config with phone number if not set
         if (!config.whatsapp.phoneNumber || config.whatsapp.phoneNumber !== info.wid.user) {
             config.whatsapp.phoneNumber = info.wid.user;
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-            console.log(`📝 Updated config.json with phone number: ${info.wid.user}`);
+            console.log(`[CONFIG] Updated config.json with phone number: ${info.wid.user}`);
         }
         
         // Find target group
         targetGroupId = await findTargetGroup();
         
         if (targetGroupId) {
-            console.log('\n🎯 Now monitoring for fuel reports...');
+            console.log('\n[MONITOR] Now monitoring for fuel reports...');
             console.log('   Messages will be saved to: data/raw_messages/');
             console.log('   Press Ctrl+C to stop.\n');
             
@@ -1584,20 +1703,20 @@ async function startClient() {
             const missedCount = await fetchMissedMessages(targetGroupId);
             
             // Send startup notification to the group
-            let startupMsg = `🟢 *FUEL EXTRACTOR ONLINE*\n\n` +
-                `📱 System connected and monitoring\n` +
-                `⏰ ${new Date().toLocaleString()}`;
+            let startupMsg = `[ONLINE] *FUEL EXTRACTOR ONLINE*\n\n` +
+                `[STATUS] System connected and monitoring\n` +
+                `[TIME] ${new Date().toLocaleString()}`;
             
             if (missedCount > 0) {
-                startupMsg += `\n\n📥 Processing ${missedCount} missed report(s)...`;
+                startupMsg += `\n\n[INBOX] Processing ${missedCount} missed report(s)...`;
             }
             
             startupMsg += `\n\n_Type !how for fuel update guide_`;
             
             await sendGroupMessage(startupMsg);
-            console.log('📢 Startup notification sent to group');
+            console.log('[NOTIFY] Startup notification sent to group');
         } else {
-            console.log('\n⚠️ Continuing to monitor all groups for now...');
+            console.log('\n[WARN] Continuing to monitor all groups for now...');
             console.log('   Edit config.json with correct group name and restart.\n');
         }
     });
@@ -1617,7 +1736,7 @@ async function startClient() {
             
             // Check for admin commands first (only from target group)
             if (isAdminCommand(msg.body)) {
-                console.log(`\n🔧 Admin command received: ${msg.body.split('\n')[0]}`);
+                console.log(`\n[CMD] Admin command received: ${msg.body.split('\n')[0]}`);
                 await handleAdminCommand(msg, msg.body);
                 return;
             }
@@ -1659,18 +1778,18 @@ async function startClient() {
                 capturedAt: new Date().toISOString()
             };
             
-            console.log(`\n📨 Fuel report from ${senderName} in "${chat.name}":`);
+            console.log(`\n[MSG] Fuel report from ${senderName} in "${chat.name}":`);
             console.log(`   ${msg.body.substring(0, 100)}${msg.body.length > 100 ? '...' : ''}`);
             
             // Save message - confirmation will be sent after processor validates
             saveMessage(messageData);
-            console.log('   💾 Saved for processing (confirmation pending validation)');
+            console.log('   [SAVED] Saved for processing (confirmation pending validation)');
             
             // Update last processed timestamp
             updateLastProcessedTime(msg.timestamp);
             
         } catch (error) {
-            console.error('❌ Error processing message:', error.message);
+            console.error('[ERROR] Error processing message:', error.message);
         }
     });
     
@@ -1687,7 +1806,7 @@ async function startClient() {
             // Check if the edited message is now a fuel report
             if (!isFuelReport(newBody)) return;
             
-            console.log(`\n✏️ Message edited in "${chat.name}":`);
+            console.log(`\n[EDIT] Message edited in "${chat.name}":`);
             console.log(`   Old: ${oldBody.substring(0, 50)}...`);
             console.log(`   New: ${newBody.substring(0, 50)}...`);
             
@@ -1727,7 +1846,7 @@ async function startClient() {
                         content.editedAt = new Date().toISOString();
                         content.originalBody = oldBody;
                         fs.writeFileSync(filepath, JSON.stringify(content, null, 2));
-                        console.log(`💾 Updated existing message file: ${file}`);
+                        console.log(`[SAVED] Updated existing message file: ${file}`);
                         found = true;
                         break;
                     }
@@ -1756,7 +1875,7 @@ async function startClient() {
                 
                 // If key fields changed and within edit window, require admin approval
                 if (keyFieldsChanged.length > 0 && isWithinEditWindow) {
-                    console.log(`⚠️ Key fields changed: ${keyFieldsChanged.join(', ')} - requires approval`);
+                    console.log(`[WARN] Key fields changed: ${keyFieldsChanged.join(', ')} - requires approval`);
                     
                     // Save to pending approvals
                     const pendingFile = path.join(ROOT_DIR, 'data', 'pending_approvals.json');
@@ -1810,27 +1929,27 @@ async function startClient() {
                     fs.writeFileSync(pendingFile, JSON.stringify(approvals, null, 2));
                     
                     // Build detailed comparison message
-                    let issueMsg = `✏️ *MESSAGE EDIT DETECTED*\n`;
-                    issueMsg += `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-                    issueMsg += `⏱️ *Time since original post:* ${Math.round(minutesSinceOriginal)} minutes\n`;
-                    issueMsg += `📝 *Fields changed:* ${keyFieldsChanged.join(', ')}\n\n`;
+                    let issueMsg = `[EDIT] *MESSAGE EDIT DETECTED*\n`;
+                    issueMsg += `----------------------------\n\n`;
+                    issueMsg += `[TIME] *Time since original post:* ${Math.round(minutesSinceOriginal)} minutes\n`;
+                    issueMsg += `[CHANGES] *Fields changed:* ${keyFieldsChanged.join(', ')}\n\n`;
                     
                     // Show detailed comparison for each changed field
-                    issueMsg += `📊 *DETAILED CHANGES*\n`;
-                    issueMsg += `───────────────────────\n`;
+                    issueMsg += `[DETAILS] *DETAILED CHANGES*\n`;
+                    issueMsg += `----------------------------\n`;
                     
                     if (keyFieldsChanged.includes('DRIVER')) {
-                        issueMsg += `👤 *DRIVER*\n`;
+                        issueMsg += `[DRIVER] *DRIVER*\n`;
                         issueMsg += `   Before: ${oldFields.driver || 'N/A'}\n`;
                         issueMsg += `   After:  ${newFields.driver || 'N/A'}\n\n`;
                     }
                     if (keyFieldsChanged.includes('CAR')) {
-                        issueMsg += `🚗 *CAR*\n`;
+                        issueMsg += `[CAR] *CAR*\n`;
                         issueMsg += `   Before: ${oldFields.car || 'N/A'}\n`;
                         issueMsg += `   After:  ${newFields.car || 'N/A'}\n\n`;
                     }
                     if (keyFieldsChanged.includes('DEPARTMENT')) {
-                        issueMsg += `🏢 *DEPARTMENT*\n`;
+                        issueMsg += `[DEPT] *DEPARTMENT*\n`;
                         issueMsg += `   Before: ${oldFields.department || 'N/A'}\n`;
                         issueMsg += `   After:  ${newFields.department || 'N/A'}\n\n`;
                     }
@@ -1838,7 +1957,7 @@ async function startClient() {
                         const oldOdo = oldFields.odometer ? parseInt(oldFields.odometer.toString().replace(/,/g, '')) : 0;
                         const newOdo = newFields.odometer ? parseInt(newFields.odometer.toString().replace(/,/g, '')) : 0;
                         const odoDiff = newOdo - oldOdo;
-                        issueMsg += `📏 *ODOMETER*\n`;
+                        issueMsg += `[ODO] *ODOMETER*\n`;
                         issueMsg += `   Before: ${oldOdo.toLocaleString()} km\n`;
                         issueMsg += `   After:  ${newOdo.toLocaleString()} km\n`;
                         issueMsg += `   Diff:   ${odoDiff >= 0 ? '+' : ''}${odoDiff.toLocaleString()} km\n\n`;
@@ -1847,7 +1966,7 @@ async function startClient() {
                         const oldLiters = oldFields.liters ? parseFloat(oldFields.liters.toString().replace(/,/g, '')) : 0;
                         const newLiters = newFields.liters ? parseFloat(newFields.liters.toString().replace(/,/g, '')) : 0;
                         const litersDiff = newLiters - oldLiters;
-                        issueMsg += `⛽ *LITERS*\n`;
+                        issueMsg += `[FUEL] *LITERS*\n`;
                         issueMsg += `   Before: ${oldLiters.toFixed(1)} L\n`;
                         issueMsg += `   After:  ${newLiters.toFixed(1)} L\n`;
                         issueMsg += `   Diff:   ${litersDiff >= 0 ? '+' : ''}${litersDiff.toFixed(1)} L\n\n`;
@@ -1856,21 +1975,21 @@ async function startClient() {
                         const oldAmount = oldFields.amount ? parseFloat(oldFields.amount.toString().replace(/,/g, '')) : 0;
                         const newAmount = newFields.amount ? parseFloat(newFields.amount.toString().replace(/,/g, '')) : 0;
                         const amountDiff = newAmount - oldAmount;
-                        issueMsg += `💰 *AMOUNT*\n`;
+                        issueMsg += `[COST] *AMOUNT*\n`;
                         issueMsg += `   Before: KSH ${oldAmount.toLocaleString()}\n`;
                         issueMsg += `   After:  KSH ${newAmount.toLocaleString()}\n`;
                         issueMsg += `   Diff:   ${amountDiff >= 0 ? '+' : ''}KSH ${amountDiff.toLocaleString()}\n\n`;
                     }
                     if (keyFieldsChanged.includes('TYPE')) {
-                        issueMsg += `🔘 *FUEL TYPE*\n`;
+                        issueMsg += `[TYPE] *FUEL TYPE*\n`;
                         issueMsg += `   Before: ${oldFields.type || 'N/A'}\n`;
                         issueMsg += `   After:  ${newFields.type || 'N/A'}\n\n`;
                     }
                     
-                    issueMsg += `━━━━━━━━━━━━━━━━━━━━━━━\n`;
-                    issueMsg += `🔑 Approval ID: *${approvalId}*\n\n`;
-                    issueMsg += `✅ *!approve ${approvalId}* - Accept edit\n`;
-                    issueMsg += `❌ *!reject ${approvalId}* - Keep original`;
+                    issueMsg += `----------------------------\n`;
+                    issueMsg += `[ID] Approval ID: *${approvalId}*\n\n`;
+                    issueMsg += `[OK] *!approve ${approvalId}* - Accept edit\n`;
+                    issueMsg += `[X] *!reject ${approvalId}* - Keep original`;
                     
                     // Notify about pending approval
                     const errorFile = path.join(ROOT_DIR, 'data', 'validation_errors.json');
@@ -1890,11 +2009,11 @@ async function startClient() {
                     });
                     
                     fs.writeFileSync(errorFile, JSON.stringify(errors, null, 2));
-                    console.log(`📝 Edit saved for approval: ${approvalId}`);
+                    console.log(`[SAVED] Edit saved for approval: ${approvalId}`);
                     
                 } else if (keyFieldsChanged.length > 0) {
                     // Key fields changed but outside edit window - save as new entry
-                    console.log(`⚠️ Key fields changed after edit window - saving as new record`);
+                    console.log(`[WARN] Key fields changed after edit window - saving as new record`);
                     
                     const messageData = {
                         id: msg.id._serialized + '_edited_' + Date.now(),
@@ -1913,15 +2032,15 @@ async function startClient() {
                     };
                     
                     saveMessage(messageData);
-                    console.log('💾 Saved as new record (edit after 10 min window)');
+                    console.log('[SAVED] Saved as new record (edit after 10 min window)');
                 } else {
                     // No key fields changed - just log
-                    console.log('📝 Edit detected but no key fields changed - ignoring');
+                    console.log('[INFO] Edit detected but no key fields changed - ignoring');
                 }
             }
             
         } catch (error) {
-            console.error('❌ Error processing edited message:', error.message);
+            console.error('[ERROR] Error processing edited message:', error.message);
         }
     });
     
@@ -1933,30 +2052,30 @@ async function startClient() {
     
     // Authentication failure
     client.on('auth_failure', (msg) => {
-        console.error('❌ Authentication failed:', msg);
-        console.log('🔄 Clearing session and restarting...');
+        console.error('[ERROR] Authentication failed:', msg);
+        console.log('[INFO] Clearing session and restarting...');
         clearSession();
         setTimeout(() => startClient(), 5000);
     });
     
     // Disconnected
     client.on('disconnected', (reason) => {
-        console.log('⚠️ Client disconnected:', reason);
+        console.log('[WARN] Client disconnected:', reason);
         isReady = false;
         targetGroupId = null;
-        console.log('🔄 Reconnecting in 10 seconds...');
+        console.log('[INFO] Reconnecting in 10 seconds...');
         setTimeout(() => startClient(), 10000);
     });
     
     // Start the client
-    console.log('🔌 Initializing WhatsApp connection...');
+    console.log('[INIT] Initializing WhatsApp connection...');
     console.log('   (This may take a moment on first run)\n');
     
     try {
         await client.initialize();
     } catch (error) {
-        console.error('❌ Failed to initialize client:', error.message);
-        console.log('🔄 Retrying in 10 seconds...');
+        console.error('[ERROR] Failed to initialize client:', error.message);
+        console.log('[INFO] Retrying in 10 seconds...');
         setTimeout(() => startClient(), 10000);
     }
 }
@@ -1973,7 +2092,7 @@ function watchConfig() {
     });
     
     watcher.on('change', async () => {
-        console.log('\n📝 Config file changed, checking for updates...');
+        console.log('\n[CONFIG] Config file changed, checking for updates...');
         
         try {
             const newConfig = loadConfig();
@@ -1996,7 +2115,7 @@ function watchConfig() {
             const groupChanged = newConfig.whatsapp.groupName !== oldConfig.whatsapp.groupName;
             
             if (phoneChanged) {
-                console.log('\n🔄 Phone number changed! Starting fresh setup...');
+                console.log('\n[INFO] Phone number changed! Starting fresh setup...');
                 console.log(`   Old phone: ${oldPhone}`);
                 console.log(`   New phone: ${newPhone}`);
                 
@@ -2013,7 +2132,7 @@ function watchConfig() {
             }
             
             if (groupChanged) {
-                console.log('\n🔄 Group name changed!');
+                console.log('\n[INFO] Group name changed!');
                 console.log(`   Old: ${oldConfig.whatsapp.groupName}`);
                 console.log(`   New: ${newConfig.whatsapp.groupName}`);
                 
@@ -2031,32 +2150,32 @@ function watchConfig() {
             console.log('   Configuration updated.');
             
         } catch (error) {
-            console.error('❌ Error processing config change:', error.message);
+            console.error('[ERROR] Error processing config change:', error.message);
         }
     });
     
-    console.log('👀 Watching config.json for changes...\n');
+    console.log('[WATCH] Watching config.json for changes...\n');
 }
 
 /**
  * Graceful shutdown
  */
 process.on('SIGINT', async () => {
-    console.log('\n\n🛑 Shutting down gracefully...');
+    console.log('\n\n[STOP] Shutting down gracefully...');
     
     // Update last processed time to now (so we know when system went offline)
     updateLastProcessedTime(Math.floor(Date.now() / 1000));
-    console.log('📝 Saved shutdown timestamp for missed message detection');
+    console.log('[SAVED] Saved shutdown timestamp for missed message detection');
     
     // Send shutdown notification to the group before disconnecting
     if (client && isReady && targetGroupId) {
         try {
-            const shutdownMsg = `🔴 *FUEL EXTRACTOR OFFLINE*\n\n` +
-                `⏸️ System shutting down\n` +
-                `⏰ ${new Date().toLocaleString()}\n\n` +
+            const shutdownMsg = `[OFFLINE] *FUEL EXTRACTOR OFFLINE*\n\n` +
+                `[PAUSE] System shutting down\n` +
+                `[TIME] ${new Date().toLocaleString()}\n\n` +
                 `_Messages sent now will be processed when system restarts_`;
             await client.sendMessage(targetGroupId, shutdownMsg);
-            console.log('📢 Shutdown notification sent to group');
+            console.log('[NOTIFY] Shutdown notification sent to group');
             // Small delay to ensure message is sent
             await new Promise(resolve => setTimeout(resolve, 1000));
         } catch (error) {
@@ -2066,21 +2185,68 @@ process.on('SIGINT', async () => {
     
     // Close health server
     healthServer.close(() => {
-        console.log('✅ Health server closed.');
+        console.log('[OK] Health server closed.');
     });
     
     if (client) {
         try {
             await client.destroy();
-            console.log('✅ WhatsApp client closed.');
+            console.log('[OK] WhatsApp client closed.');
         } catch (error) {
             console.error('Warning: Error closing client:', error.message);
         }
     }
     
-    console.log('👋 Goodbye!\n');
+    console.log('[BYE] Goodbye!\n');
     process.exit(0);
 });
+
+/**
+ * Uncaught exception handler - prevents crashes
+ */
+process.on('uncaughtException', (error) => {
+    console.error('[CRITICAL] Uncaught Exception:', error.message);
+    console.error(error.stack);
+    // Log to file for debugging
+    const errorLog = path.join(ROOT_DIR, 'data', 'crash_log.txt');
+    try {
+        const entry = `[${new Date().toISOString()}] UNCAUGHT EXCEPTION: ${error.message}\n${error.stack}\n\n`;
+        fs.appendFileSync(errorLog, entry);
+    } catch (e) {}
+    // Don't exit - try to continue running
+});
+
+/**
+ * Unhandled rejection handler - prevents crashes from async errors
+ */
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRITICAL] Unhandled Promise Rejection:', reason);
+    // Log to file for debugging
+    const errorLog = path.join(ROOT_DIR, 'data', 'crash_log.txt');
+    try {
+        const entry = `[${new Date().toISOString()}] UNHANDLED REJECTION: ${reason}\n\n`;
+        fs.appendFileSync(errorLog, entry);
+    } catch (e) {}
+    // Don't exit - try to continue running
+});
+
+/**
+ * Memory usage check - warn if memory is getting high
+ */
+setInterval(() => {
+    const used = process.memoryUsage();
+    const heapUsedMB = Math.round(used.heapUsed / 1024 / 1024);
+    const heapTotalMB = Math.round(used.heapTotal / 1024 / 1024);
+    
+    if (heapUsedMB > 500) {
+        console.warn(`[WARN] High memory usage: ${heapUsedMB}MB / ${heapTotalMB}MB`);
+        // Force garbage collection if available
+        if (global.gc) {
+            console.log('[GC] Running garbage collection...');
+            global.gc();
+        }
+    }
+}, 60000); // Check every minute
 
 // Main entry point
 console.log('');
@@ -2164,5 +2330,5 @@ const healthServer = http.createServer((req, res) => {
 });
 
 healthServer.listen(HEALTH_PORT, () => {
-    console.log(`🏥 Health check server running on http://localhost:${HEALTH_PORT}/health`);
+    console.log(`[HEALTH] Health check server running on http://localhost:${HEALTH_PORT}/health`);
 });

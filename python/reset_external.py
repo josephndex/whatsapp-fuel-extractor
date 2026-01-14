@@ -11,6 +11,12 @@ Run this during development to get a clean slate.
 
 import sys
 import os
+import io
+
+# Fix Windows console encoding for emoji output
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +39,7 @@ def reset_database():
     try:
         db = Database()
         if not db.engine:
-            print("    ⚠️ Database not configured, skipping...")
+            print("    [WARN] Database not configured, skipping...")
             return False
         
         # Load config to get table name
@@ -52,11 +58,11 @@ def reset_database():
         with db.engine.connect() as conn:
             result = conn.execute(text(f"DELETE FROM {table_name}"))
             conn.commit()
-            print(f"    ✅ Deleted {result.rowcount} records from {table_name}")
+            print(f"    [OK] Deleted {result.rowcount} records from {table_name}")
         
         return True
     except Exception as e:
-        print(f"    ❌ Database reset failed: {e}")
+        print(f"    [ERROR] Database reset failed: {e}")
         return False
 
 
@@ -84,12 +90,12 @@ def reset_google_sheets():
             spreadsheet_id = os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID')
         
         if not spreadsheet_id:
-            print("    ⚠️ No spreadsheet ID found in config or environment, skipping...")
+            print("    [WARN] No spreadsheet ID found in config or environment, skipping...")
             return False
         
         uploader = GoogleSheetsUploader(spreadsheet_id=spreadsheet_id, worksheet_name=sheet_name)
         if not uploader.worksheet:
-            print("    ⚠️ Google Sheets not configured, skipping...")
+            print("    [WARN] Google Sheets not configured, skipping...")
             return False
         
         # Get current row count
@@ -100,13 +106,13 @@ def reset_google_sheets():
             # Clear all rows except header (row 1)
             # Get the range to clear: from row 2 to last row
             uploader.worksheet.batch_clear([f"A2:Z{len(all_values) + 100}"])
-            print(f"    ✅ Cleared {data_rows} rows from '{sheet_name}'")
+            print(f"    [OK] Cleared {data_rows} rows from '{sheet_name}'")
         else:
-            print(f"    ✅ Sheet '{sheet_name}' already empty")
+            print(f"    [OK] Sheet '{sheet_name}' already empty")
         
         return True
     except Exception as e:
-        print(f"    ❌ Google Sheet reset failed: {e}")
+        print(f"    [ERROR] Google Sheet reset failed: {e}")
         return False
 
 
@@ -117,33 +123,64 @@ def reset_car_summary():
     try:
         with open(summary_path, 'w') as f:
             json.dump({}, f, indent=2)
-        print("    ✅ Cleared car_summary.json")
+        print("    [OK] Cleared car_summary.json")
         return True
     except Exception as e:
-        print(f"    ❌ Failed to reset car_summary.json: {e}")
+        print(f"    [ERROR] Failed to reset car_summary.json: {e}")
         return False
 
 
 def main():
-    print("")
-    print("=" * 60)
-    print("  Resetting External Data Sources")
-    print("=" * 60)
-    print("")
+    import argparse
     
-    db_ok = reset_database()
-    sheets_ok = reset_google_sheets()
-    summary_ok = reset_car_summary()
+    parser = argparse.ArgumentParser(description='Reset external data sources')
+    parser.add_argument('--database-only', action='store_true', 
+                        help='Reset only the database records')
+    parser.add_argument('--sheets-only', action='store_true', 
+                        help='Reset only Google Sheets data')
+    parser.add_argument('--summary-only', action='store_true',
+                        help='Reset only car summary file')
+    parser.add_argument('--quiet', '-q', action='store_true',
+                        help='Suppress banner output')
     
-    print("")
-    print("=" * 60)
-    if db_ok and sheets_ok and summary_ok:
-        print("  ✅ External reset complete!")
-    else:
-        print("  ⚠️ Some resets may have failed (see above)")
-    print("=" * 60)
-    print("")
+    args = parser.parse_args()
+    
+    # Determine what to reset
+    reset_db = args.database_only or (not args.database_only and not args.sheets_only and not args.summary_only)
+    reset_sheets = args.sheets_only or (not args.database_only and not args.sheets_only and not args.summary_only)
+    reset_summary = args.summary_only or (not args.database_only and not args.sheets_only and not args.summary_only)
+    
+    if not args.quiet:
+        print("")
+        print("=" * 60)
+        print("  Resetting External Data Sources")
+        print("=" * 60)
+        print("")
+    
+    results = {}
+    
+    if reset_db:
+        results['database'] = reset_database()
+    
+    if reset_sheets:
+        results['sheets'] = reset_google_sheets()
+    
+    if reset_summary:
+        results['summary'] = reset_car_summary()
+    
+    if not args.quiet:
+        print("")
+        print("=" * 60)
+        if all(results.values()):
+            print("  [OK] External reset complete!")
+        else:
+            print("  [WARN] Some resets may have failed (see above)")
+        print("=" * 60)
+        print("")
+    
+    # Return 0 if all succeeded, 1 if any failed
+    return 0 if all(results.values()) else 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

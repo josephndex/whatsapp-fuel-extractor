@@ -1,1 +1,34 @@
-[]
+[
+  {
+    "id": "fc44eaa2",
+    "type": "car_cooldown",
+    "timestamp": "2026-01-13T12:14:51.856994",
+    "record": {
+      "datetime": "2026-01-13-12-14",
+      "department": "OPERATIONS",
+      "driver": "Mary Wanjiku",
+      "car": "KCB711C",
+      "liters": 30.0,
+      "amount": 6500.0,
+      "type": "PETROL",
+      "odometer": 78547,
+      "sender": "260958287085747@lid",
+      "sender_phone": "260958287085747",
+      "raw_message": "FUEL UPDATE\nDEPARTMENT: OPERATIONS\nDRIVER: MARY WANJIKU\nCAR: KCB 711C\nLITERS: 30.00\nAMOUNT: 6,500\nTYPE: PETROL\nODOMETER: 78547"
+    },
+    "original_record": {
+      "timestamp": "2026-01-13T12:14:27.045657",
+      "driver": "Mary Wanjiku",
+      "liters": 30.0,
+      "amount": 6500.0,
+      "odometer": 78542,
+      "type": "PETROL",
+      "department": "OPERATIONS"
+    },
+    "reason": "Same car KCB711C fueled 0 minutes ago (cooldown: 12h)",
+    "status": "rejected",
+    "notified": false,
+    "rejected_at": "2026-01-13T12:16:16.952717",
+    "rejected_via": "web"
+  }
+]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import gspread
@@ -10,25 +11,52 @@ try:
 except ImportError:
     from env import get_env
 
+# Project root directory (parent of python/)
+ROOT_DIR = Path(__file__).parent.parent
+
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive'
 ]
 
+# Default credential file names to look for in project root
+DEFAULT_CREDS_FILES = ['google_credentials.json', 'credentials.json', 'service_account.json']
+
+
+def _find_credentials_file() -> Optional[Path]:
+    """Find credentials file in project root, checking common names."""
+    # First check environment variable
+    creds_file = get_env('GOOGLE_SERVICE_ACCOUNT_FILE')
+    if creds_file:
+        creds_path = Path(creds_file)
+        if creds_path.exists():
+            return creds_path
+    
+    # Fallback: look in project root for common credential file names
+    for filename in DEFAULT_CREDS_FILES:
+        creds_path = ROOT_DIR / filename
+        if creds_path.exists():
+            return creds_path
+    
+    return None
+
 
 class GoogleSheetsUploader:
     def __init__(self, spreadsheet_id: Optional[str] = None, spreadsheet_name: Optional[str] = None, worksheet_name: str = 'FUEL RECORDS'):
-        creds_file = get_env('GOOGLE_SERVICE_ACCOUNT_FILE')
+        creds_file = _find_credentials_file()
         creds_json = get_env('GOOGLE_SERVICE_ACCOUNT_JSON')
 
         if creds_file:
-            credentials = Credentials.from_service_account_file(creds_file, scopes=SCOPES)
+            credentials = Credentials.from_service_account_file(str(creds_file), scopes=SCOPES)
         elif creds_json:
             import json
             info = json.loads(creds_json)
             credentials = Credentials.from_service_account_info(info, scopes=SCOPES)
         else:
-            raise ValueError('Provide Google credentials via GOOGLE_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_ACCOUNT_JSON')
+            raise ValueError(
+                'Google credentials not found. Place google_credentials.json in project root, '
+                'or set GOOGLE_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_ACCOUNT_JSON environment variable.'
+            )
 
         self.client = gspread.authorize(credentials)
 
