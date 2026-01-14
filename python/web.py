@@ -434,12 +434,19 @@ def load_records_from_sheets(start_date: Optional[datetime] = None, end_date: Op
     return records
 
 
-def load_records_by_source(source: str = DATA_SOURCE_EXCEL, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[Dict]:
-    """Load records from the specified data source with date filtering."""
+def load_records_by_source(source: str = DATA_SOURCE_EXCEL, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> Tuple[List[Dict], str]:
+    """Load records from the specified data source with date filtering.
+    
+    Returns: (records, actual_source_used)
+    """
     if source == DATA_SOURCE_DB:
-        return load_records_from_db(start_date=start_date, end_date=end_date)
+        records = load_records_from_db(start_date=start_date, end_date=end_date)
+        if records:
+            return records, DATA_SOURCE_DB
     elif source == DATA_SOURCE_SHEETS:
-        return load_records_from_sheets(start_date=start_date, end_date=end_date)
+        records = load_records_from_sheets(start_date=start_date, end_date=end_date)
+        if records:
+            return records, DATA_SOURCE_SHEETS
     else:
         # Default to Excel
         records = load_records()
@@ -455,8 +462,69 @@ def load_records_by_source(source: str = DATA_SOURCE_EXCEL, start_date: Optional
                     if end_date and dt > end_date:
                         continue
                 filtered.append(r)
-            return filtered
-        return records
+            if filtered:
+                return filtered, DATA_SOURCE_EXCEL
+        elif records:
+            return records, DATA_SOURCE_EXCEL
+    
+    # Return empty if source had no data
+    return [], source
+
+
+def load_records_with_fallback(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> Tuple[List[Dict], str]:
+    """Load records with automatic fallback: Sheets -> Database -> Excel.
+    
+    Priority order:
+    1. Google Sheets (primary)
+    2. Database (fallback)
+    3. Excel file (last resort)
+    
+    Returns: (records, source_used)
+    """
+    # Try Google Sheets first
+    try:
+        records = load_records_from_sheets(start_date=start_date, end_date=end_date)
+        if records:
+            print(f"[DATA] Loaded {len(records)} records from Google Sheets")
+            return records, DATA_SOURCE_SHEETS
+    except Exception as e:
+        print(f"[WARN] Google Sheets failed: {e}")
+    
+    # Try Database second
+    try:
+        records = load_records_from_db(start_date=start_date, end_date=end_date)
+        if records:
+            print(f"[DATA] Loaded {len(records)} records from Database")
+            return records, DATA_SOURCE_DB
+    except Exception as e:
+        print(f"[WARN] Database failed: {e}")
+    
+    # Fall back to Excel
+    try:
+        records = load_records()
+        
+        # Apply date filter for Excel
+        if start_date or end_date:
+            filtered = []
+            for r in records:
+                dt = r.get('datetime_obj')
+                if dt:
+                    if start_date and dt < start_date:
+                        continue
+                    if end_date and dt > end_date:
+                        continue
+                filtered.append(r)
+            records = filtered
+        
+        if records:
+            print(f"[DATA] Loaded {len(records)} records from Excel")
+            return records, DATA_SOURCE_EXCEL
+    except Exception as e:
+        print(f"[WARN] Excel failed: {e}")
+    
+    # No data found
+    print("[WARN] No data available from any source")
+    return [], 'none'
 
 
 def get_available_data_sources() -> Dict[str, bool]:
@@ -839,8 +907,8 @@ async def analytics_page(
         end_dt = datetime.now()
         start_dt = end_dt - timedelta(days=days)
     
-    # Load records from selected source
-    records = load_records_by_source(source=source, start_date=start_dt, end_date=end_dt)
+    # Load records with automatic fallback (Sheets -> DB -> Excel)
+    records, actual_source = load_records_with_fallback(start_date=start_dt, end_date=end_dt)
     
     # Get chart data (don't apply days filter again since we already filtered)
     chart_data = get_chart_data(records, days=365)  # Use large value since records are pre-filtered
@@ -868,7 +936,7 @@ async def analytics_page(
         "request": request,
         "chart_data": json.dumps(chart_data),
         "days": days,
-        "source": source,
+        "source": actual_source,  # Show which source was actually used
         "available_sources": available_sources,
         "start_date": start_date or (start_dt.strftime('%Y-%m-%d') if start_dt else ''),
         "end_date": end_date or (end_dt.strftime('%Y-%m-%d') if end_dt else ''),
@@ -881,12 +949,11 @@ async def analytics_page(
 
 @app.get("/api/analytics")
 async def api_analytics(
-    source: str = DATA_SOURCE_EXCEL,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     days: int = 30
 ):
-    """API endpoint for analytics data with source and date filtering"""
+    """API endpoint for analytics data with automatic fallback (Sheets -> DB -> Excel)"""
     
     # Parse date strings
     start_dt = None
@@ -908,7 +975,8 @@ async def api_analytics(
         end_dt = datetime.now()
         start_dt = end_dt - timedelta(days=days)
     
-    records = load_records_by_source(source=source, start_date=start_dt, end_date=end_dt)
+    # Use fallback: Sheets -> DB -> Excel
+    records, actual_source = load_records_with_fallback(start_date=start_dt, end_date=end_dt)
     chart_data = get_chart_data(records, days=365)
     
     total_liters = sum(r['liters'] for r in records)
@@ -927,7 +995,7 @@ async def api_analytics(
             'start': start_dt.isoformat() if start_dt else None,
             'end': end_dt.isoformat() if end_dt else None,
         },
-        'source': source,
+        'source': actual_source,
     }
 
 
