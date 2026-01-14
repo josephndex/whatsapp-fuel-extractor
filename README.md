@@ -18,6 +18,20 @@ Automatically extract fueling details from WhatsApp group messages and save them
 - **12-hour cooldown** - Same car can't fuel again within 12 hours
 - **Edit detection** - Tracks message edits and requires approval for key changes
 
+### Fuel Efficiency Tracking
+- **Automatic km/L calculation** - Calculates efficiency after each fuel-up using odometer readings
+- **Efficiency alerts** - Notifies admins of unusual readings:
+  - Low efficiency (<4 km/L): Possible fuel theft or vehicle issues
+  - High efficiency (>20 km/L): Possible odometer discrepancy
+- **Confirmation with stats** - Each confirmation shows distance traveled and efficiency rating
+- **Historical tracking** - Stores efficiency history for trend analysis
+
+### Progressive Web App (PWA)
+- **Installable** - Install dashboard as mobile/desktop app
+- **Offline support** - Works offline with cached pages
+- **Push notifications** - Ready for future push notification support
+- **App shortcuts** - Quick access to Dashboard, Records, Analytics, Approvals
+
 ### Admin Commands
 | Command | Description |
 |---------|-------------|
@@ -70,6 +84,12 @@ WHATSAPP FUEL EXTRACTOR/
 │   ├── google_sheets_uploader.py  # Google Sheets integration
 │   ├── reset_external.py    # Reset DB and Sheets
 │   └── env.py               # Environment loader
+├── python/
+│   ├── static/              # PWA assets
+│   │   ├── manifest.json    # PWA manifest
+│   │   ├── sw.js            # Service worker
+│   │   ├── offline.html     # Offline fallback
+│   │   └── icons/           # App icons
 └── data/
     ├── raw_messages/        # Incoming messages (JSON)
     ├── processed/           # Successfully processed
@@ -79,7 +99,8 @@ WHATSAPP FUEL EXTRACTOR/
     ├── confirmations.json   # Pending confirmations
     ├── validation_errors.json # Pending error notifications
     ├── pending_approvals.json # Pending admin approvals
-    └── car_last_update.json # Car cooldown tracking
+    ├── car_last_update.json # Car cooldown tracking
+    └── efficiency_history.json # Fuel efficiency records
 ```
 
 ## Prerequisites

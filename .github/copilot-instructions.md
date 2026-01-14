@@ -98,6 +98,21 @@ def check_car_cooldown(car_plate: str, record: Dict) -> Tuple[bool, Optional[str
 ### 4. Odometer Validation
 New reading must be greater than previous for the same car.
 
+### 5. Fuel Efficiency Tracking
+Calculate and alert on unusual fuel efficiency:
+```python
+# Efficiency thresholds (km per liter)
+EFFICIENCY_ALERT_LOW = 4.0   # Below = alert (possible fuel theft)
+EFFICIENCY_ALERT_HIGH = 20.0  # Above = suspicious (odometer issue)
+EFFICIENCY_GOOD_MIN = 6.0     # Minimum for "good" efficiency
+EFFICIENCY_GOOD_MAX = 12.0    # Maximum for "good" efficiency
+
+def calculate_fuel_efficiency(car_plate, current_odometer, current_liters):
+    # Distance = current_odometer - previous_odometer
+    # Efficiency = distance / previous_liters
+    # If efficiency < LOW or > HIGH, send alert to admins
+```
+
 ## Admin Commands
 
 | Command | Handler | Description |
@@ -140,9 +155,24 @@ New reading must be greater than previous for the same car.
     "amount": 10000,
     "odometer": 45230,
     "type": "DIESEL",
-    "department": "LOGISTICS"
+    "department": "LOGISTICS",
+    "efficiency": 8.5
   }
 }
+```
+
+### Efficiency History (`data/efficiency_history.json`)
+```json
+[
+  {
+    "timestamp": "2026-01-08T10:30:00",
+    "car": "KCA542Q",
+    "driver": "JOHN",
+    "efficiency": 8.5,
+    "distance": 212,
+    "liters": 25.0
+  }
+]
 ```
 
 ## Edit Detection (listener.js)
@@ -187,8 +217,12 @@ if (oldFields.type !== newFields.type) keyFieldsChanged.push('TYPE');
 - `FuelReportParser.parse(body)` - Extract all fields from message
 - `check_car_cooldown(plate, record)` - 12-hour cooldown validation
 - `save_pending_approval(type, record, original, reason)` - Queue for approval
-- `update_car_last_update(plate, record)` - Update cooldown tracking
+- `update_car_last_update(plate, record, efficiency)` - Update cooldown tracking with efficiency
 - `ExcelExporter.append_record(record)` - Add row to Excel
+- `calculate_fuel_efficiency(plate, odometer, liters)` - Calculate km/L efficiency
+- `save_efficiency_record(plate, efficiency, distance, liters, driver)` - Store efficiency history
+- `save_efficiency_alert(plate, driver, alert)` - Send alert for unusual efficiency
+- `get_vehicle_efficiency_stats(plate, days)` - Get vehicle efficiency statistics
 
 ### weekly_summary.py
 - `calculate_statistics(records, days)` - Compute stats with breakdowns
@@ -196,6 +230,14 @@ if (oldFields.type !== newFields.type) keyFieldsChanged.push('TYPE');
 - `format_weekly_summary(stats)` - Week overview with top performers
 - `format_monthly_summary(stats)` - Executive summary with percentages
 - `get_car_summary(plate, days)` - Vehicle-specific analysis
+
+### web.py (Dashboard)
+- `load_efficiency_history(days)` - Load efficiency records from JSON
+- `get_efficiency_stats(days)` - Calculate fleet-wide efficiency stats
+- `GET /api/efficiency` - Fleet efficiency API endpoint
+- `GET /api/efficiency/{car}` - Vehicle-specific efficiency API
+- `GET /sw.js` - Serve service worker for PWA
+- `GET /offline.html` - Offline fallback page
 
 ## Data Flow
 
@@ -250,6 +292,23 @@ CAR_COOLDOWN_HOURS = 12           # Same car can't fuel within 12 hours
 EDIT_APPROVAL_TIMEOUT_MINUTES = 10  # Edit detection window
 ```
 
+## Progressive Web App (PWA)
+
+The web dashboard is a PWA with offline support:
+
+### Files
+- `python/static/manifest.json` - App metadata, icons, shortcuts
+- `python/static/sw.js` - Service worker for caching
+- `python/static/offline.html` - Offline fallback page
+- `python/static/icons/icon.svg` - App icon
+
+### Features
+- Install prompt on mobile/desktop browsers
+- Caches pages for offline access
+- Network-first strategy for API calls
+- Cache-first strategy for static assets
+- App shortcuts: Dashboard, Records, Analytics, Approvals
+
 ## Dependencies
 
 ### Node.js
@@ -261,3 +320,5 @@ EDIT_APPROVAL_TIMEOUT_MINUTES = 10  # Edit detection window
 - `openpyxl` - Excel file handling
 - `pandas` - Data manipulation
 - `schedule` - Job scheduling
+- `fastapi` - Web dashboard framework
+- `uvicorn` - ASGI server
