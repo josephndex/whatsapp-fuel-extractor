@@ -51,6 +51,24 @@ Automatically extract fueling details from WhatsApp group messages and save them
 | `!help` | Show all admin commands |
 | `!how` | Guide for drivers (public) |
 
+### Driver Commands (Public)
+Anyone in the group can use these commands:
+
+| Command | Description |
+|---------|-------------|
+| `!how` | How to send a fuel update |
+| `!myrecords` | View your recent fuel records |
+| `!myefficiency` | View your fuel efficiency stats |
+| `!myvehicles` | View vehicles you've fueled |
+| `!commands` | Show available commands |
+
+**Natural Language Queries:**
+| Query | Description |
+|-------|-------------|
+| `fuel today` | Today's fuel summary |
+| `how much KCA542Q` | Vehicle fuel usage |
+| `fuel this week` | Weekly fuel summary |
+
 ## How It Works
 
 ```

@@ -129,6 +129,28 @@ def calculate_fuel_efficiency(car_plate, current_odometer, current_liters):
 | `!help` | Direct response | Show all admin commands |
 | `!how` | `getFuelUpdateGuide()` | Public guide for drivers |
 
+## Driver Commands (Public)
+
+Commands available to all group members (not just admins):
+
+| Command | Handler | Description |
+|---------|---------|-------------|
+| `!how` | `getFuelUpdateGuide()` | How to send a fuel update |
+| `!myrecords` | `getDriverRecords(msg)` | Driver's recent fuel records |
+| `!myefficiency` | `getDriverEfficiency(msg)` | Driver's fuel efficiency stats |
+| `!myvehicles` | `getDriverVehicles(msg)` | Vehicles the driver has fueled |
+| `!commands` | `getPublicCommandsHelp()` | Show available public commands |
+
+### Natural Language Queries
+
+The bot understands natural language queries:
+
+| Query | Handler | Description |
+|-------|---------|-------------|
+| `fuel today` | `getTodayFuelSummary()` | Today's fuel summary |
+| `how much KCA542Q` | `getVehicleFuelSummary(plate)` | Vehicle fuel usage |
+| `fuel this week` | `getWeeklyFuelSummary()` | Weekly fuel summary |
+
 ## Approval System
 
 ### Pending Approval Structure (`data/pending_approvals.json`)
@@ -207,11 +229,21 @@ if (oldFields.type !== newFields.type) keyFieldsChanged.push('TYPE');
 - `isFuelReport(body)` - Check if message starts with "FUEL UPDATE"
 - `parseFuelFields(body)` - Extract fields for edit comparison
 - `handleAdminCommand(msg, body)` - Route admin commands
+- `handlePublicCommand(msg, body)` - Route public driver commands
 - `isGroupAdmin(msg)` - Check if sender is group admin
+- `getSenderName(msg)` - Get sender's display name from message
 - `getPendingApprovals()` - Get pending approval list
 - `processApproval(id, approve)` - Approve/reject with record creation
 - `buildPythonCommand(script, ...args)` - Cross-platform Python execution
 - `getCondaPaths()` - Auto-discover conda installation
+- `getDriverRecords(msg)` - Get sender's fuel records
+- `getDriverEfficiency(msg)` - Get sender's efficiency stats
+- `getDriverVehicles(msg)` - Get vehicles the driver has fueled
+- `getPublicCommandsHelp()` - Show available public commands
+- `handleNaturalQuery(msg, text)` - Parse natural language queries
+- `getTodayFuelSummary()` - Today's fuel summary
+- `getWeeklyFuelSummary()` - Weekly fuel summary
+- `getVehicleFuelSummary(plate)` - Vehicle-specific summary
 
 ### processor.py
 - `FuelReportParser.parse(body)` - Extract all fields from message

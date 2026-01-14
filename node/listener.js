@@ -1121,6 +1121,439 @@ async function isGroupAdmin(msg) {
 }
 
 /**
+ * Get the sender's name from a WhatsApp message
+ */
+function getSenderName(msg) {
+    // Try to get the display name
+    if (msg._data && msg._data.notifyName) {
+        return msg._data.notifyName;
+    }
+    // Fallback to phone number
+    const contact = msg.author || msg.from;
+    if (contact) {
+        return contact.split('@')[0];
+    }
+    return 'Unknown';
+}
+
+/**
+ * Get public commands help
+ */
+function getPublicCommandsHelp() {
+    let help = `[HELP] *AVAILABLE COMMANDS*\n`;
+    help += `------------------------------------\n\n`;
+    
+    help += `*Everyone can use:*\n\n`;
+    help += `!how - How to send a fuel update\n`;
+    help += `!myrecords - View your recent fuel records\n`;
+    help += `!myefficiency - View your fuel efficiency stats\n`;
+    help += `!myvehicles - View vehicles you've fueled\n`;
+    help += `!commands - Show this help\n\n`;
+    
+    help += `*Natural language:*\n`;
+    help += `"fuel today" - Today's fuel summary\n`;
+    help += `"how much KCA542Q" - Vehicle fuel usage\n\n`;
+    
+    help += `_Admin commands: type !help_`;
+    
+    return help;
+}
+
+/**
+ * Get driver's recent fuel records
+ */
+async function getDriverRecords(msg) {
+    const senderName = getSenderName(msg);
+    const driverHistoryFile = path.join(ROOT_DIR, 'data', 'driver_history.json');
+    
+    // Run Python script to get driver records
+    try {
+        const queryScript = path.join(ROOT_DIR, 'python', 'processor.py');
+        const { execSync } = require('child_process');
+        const cmd = buildPythonCommand(queryScript, '--driver-query', `"${senderName}"`, '--limit', '10');
+        
+        try {
+            execSync(cmd, { cwd: ROOT_DIR, shell: true, timeout: 30000 });
+        } catch (e) {
+            // Script might not support this yet, use fallback
+        }
+        
+        // Read from driver history if available
+        if (fs.existsSync(driverHistoryFile)) {
+            const history = JSON.parse(fs.readFileSync(driverHistoryFile, 'utf8'));
+            const driverRecords = history[senderName.toUpperCase()] || history[senderName] || [];
+            
+            if (driverRecords.length === 0) {
+                return `[INFO] *No Records Found*\n\nNo fuel records found for "${senderName}".\n\n_Make sure your DRIVER name matches exactly._`;
+            }
+            
+            let response = `[RECORDS] *Your Recent Fuel Records*\n`;
+            response += `------------------------------------\n`;
+            response += `Driver: ${senderName}\n\n`;
+            
+            const recentRecords = driverRecords.slice(-5).reverse();
+            recentRecords.forEach((r, i) => {
+                response += `${i + 1}. ${r.car} - ${r.liters}L (KSH ${parseFloat(r.amount || 0).toLocaleString()})\n`;
+                response += `   ${r.datetime || 'N/A'}\n\n`;
+            });
+            
+            response += `_Total records: ${driverRecords.length}_`;
+            return response;
+        }
+        
+        // Fallback: search Excel via Python
+        return await searchDriverRecordsFromExcel(senderName);
+        
+    } catch (e) {
+        console.error('Error getting driver records:', e.message);
+        return `[ERROR] Could not retrieve records. Please try again.`;
+    }
+}
+
+/**
+ * Search driver records from Excel file
+ */
+async function searchDriverRecordsFromExcel(driverName) {
+    try {
+        const queryScript = path.join(ROOT_DIR, 'python', 'processor.py');
+        const { execSync } = require('child_process');
+        const outputFile = path.join(ROOT_DIR, 'data', 'query_result.json');
+        
+        const cmd = buildPythonCommand(queryScript, '--query-driver', `"${driverName}"`, '--output', `"${outputFile}"`);
+        
+        try {
+            execSync(cmd, { cwd: ROOT_DIR, shell: true, timeout: 30000 });
+            
+            if (fs.existsSync(outputFile)) {
+                const result = JSON.parse(fs.readFileSync(outputFile, 'utf8'));
+                if (result.records && result.records.length > 0) {
+                    let response = `[RECORDS] *Your Recent Fuel Records*\n`;
+                    response += `------------------------------------\n`;
+                    response += `Driver: ${driverName}\n\n`;
+                    
+                    result.records.slice(0, 5).forEach((r, i) => {
+                        response += `${i + 1}. ${r.car} - ${r.liters}L (KSH ${parseFloat(r.amount || 0).toLocaleString()})\n`;
+                        response += `   ${r.datetime || 'N/A'}\n\n`;
+                    });
+                    
+                    response += `_Total records: ${result.total || result.records.length}_`;
+                    return response;
+                }
+            }
+        } catch (e) {
+            // Python query failed
+        }
+        
+        return `[INFO] *No Records Found*\n\nNo fuel records found for "${driverName}".\n\n_Make sure your DRIVER name in fuel reports matches your WhatsApp name._`;
+        
+    } catch (e) {
+        console.error('Error searching Excel:', e.message);
+        return `[ERROR] Could not search records. Please try again.`;
+    }
+}
+
+/**
+ * Get driver's fuel efficiency stats
+ */
+async function getDriverEfficiency(msg) {
+    const senderName = getSenderName(msg);
+    const efficiencyFile = path.join(ROOT_DIR, 'data', 'efficiency_history.json');
+    
+    try {
+        if (!fs.existsSync(efficiencyFile)) {
+            return `[INFO] *No Efficiency Data*\n\nNo efficiency records available yet.\n\n_Efficiency is calculated after multiple fuel-ups for the same vehicle._`;
+        }
+        
+        const history = JSON.parse(fs.readFileSync(efficiencyFile, 'utf8'));
+        
+        // Filter records for this driver
+        const driverRecords = history.filter(r => 
+            r.driver && r.driver.toUpperCase() === senderName.toUpperCase()
+        );
+        
+        if (driverRecords.length === 0) {
+            return `[INFO] *No Efficiency Data*\n\nNo efficiency records found for "${senderName}".\n\n_Efficiency is calculated after your second fuel-up for a vehicle._`;
+        }
+        
+        // Calculate stats
+        const efficiencies = driverRecords.map(r => r.efficiency).filter(e => e > 0);
+        const avgEfficiency = efficiencies.reduce((a, b) => a + b, 0) / efficiencies.length;
+        const minEfficiency = Math.min(...efficiencies);
+        const maxEfficiency = Math.max(...efficiencies);
+        const totalDistance = driverRecords.reduce((a, r) => a + (r.distance || 0), 0);
+        const totalLiters = driverRecords.reduce((a, r) => a + (r.liters || 0), 0);
+        
+        // Get efficiency rating
+        let rating = 'Normal';
+        let ratingIcon = '[OK]';
+        if (avgEfficiency >= 6 && avgEfficiency <= 12) {
+            rating = 'Good';
+            ratingIcon = '[GOOD]';
+        } else if (avgEfficiency < 4) {
+            rating = 'Poor - Check vehicle';
+            ratingIcon = '[!]';
+        } else if (avgEfficiency > 20) {
+            rating = 'Unusually high';
+            ratingIcon = '[?]';
+        }
+        
+        let response = `[STATS] *Your Fuel Efficiency*\n`;
+        response += `------------------------------------\n`;
+        response += `Driver: ${senderName}\n\n`;
+        
+        response += `${ratingIcon} Average: *${avgEfficiency.toFixed(1)} km/L*\n`;
+        response += `Rating: ${rating}\n\n`;
+        
+        response += `Range: ${minEfficiency.toFixed(1)} - ${maxEfficiency.toFixed(1)} km/L\n`;
+        response += `Total Distance: ${totalDistance.toLocaleString()} km\n`;
+        response += `Total Fuel: ${totalLiters.toFixed(1)} L\n\n`;
+        
+        response += `_Based on ${driverRecords.length} records_`;
+        
+        return response;
+        
+    } catch (e) {
+        console.error('Error getting efficiency:', e.message);
+        return `[ERROR] Could not retrieve efficiency data. Please try again.`;
+    }
+}
+
+/**
+ * Get vehicles the driver has fueled
+ */
+async function getDriverVehicles(msg) {
+    const senderName = getSenderName(msg);
+    const carLastUpdateFile = path.join(ROOT_DIR, 'data', 'car_last_update.json');
+    const efficiencyFile = path.join(ROOT_DIR, 'data', 'efficiency_history.json');
+    
+    try {
+        let vehicles = new Map(); // plate -> { count, lastDate, totalLiters }
+        
+        // Check efficiency history for this driver
+        if (fs.existsSync(efficiencyFile)) {
+            const history = JSON.parse(fs.readFileSync(efficiencyFile, 'utf8'));
+            const driverRecords = history.filter(r => 
+                r.driver && r.driver.toUpperCase() === senderName.toUpperCase()
+            );
+            
+            driverRecords.forEach(r => {
+                const existing = vehicles.get(r.car) || { count: 0, lastDate: '', totalLiters: 0 };
+                existing.count++;
+                existing.totalLiters += r.liters || 0;
+                if (r.timestamp > existing.lastDate) {
+                    existing.lastDate = r.timestamp;
+                }
+                vehicles.set(r.car, existing);
+            });
+        }
+        
+        // Also check car_last_update for recent activity
+        if (fs.existsSync(carLastUpdateFile)) {
+            const updates = JSON.parse(fs.readFileSync(carLastUpdateFile, 'utf8'));
+            for (const [plate, data] of Object.entries(updates)) {
+                if (data.driver && data.driver.toUpperCase() === senderName.toUpperCase()) {
+                    const existing = vehicles.get(plate) || { count: 0, lastDate: '', totalLiters: 0 };
+                    existing.lastDate = data.timestamp || existing.lastDate;
+                    vehicles.set(plate, existing);
+                }
+            }
+        }
+        
+        if (vehicles.size === 0) {
+            return `[INFO] *No Vehicles Found*\n\nNo vehicles found for driver "${senderName}".\n\n_Make sure your DRIVER name matches your WhatsApp name._`;
+        }
+        
+        let response = `[VEHICLES] *Your Vehicles*\n`;
+        response += `------------------------------------\n`;
+        response += `Driver: ${senderName}\n\n`;
+        
+        let i = 1;
+        for (const [plate, data] of vehicles) {
+            response += `${i}. *${plate}*\n`;
+            if (data.count > 0) response += `   Fuel-ups: ${data.count}\n`;
+            if (data.totalLiters > 0) response += `   Total: ${data.totalLiters.toFixed(1)} L\n`;
+            if (data.lastDate) {
+                const lastDate = new Date(data.lastDate);
+                response += `   Last: ${lastDate.toLocaleDateString()}\n`;
+            }
+            response += `\n`;
+            i++;
+        }
+        
+        response += `_Total vehicles: ${vehicles.size}_`;
+        
+        return response;
+        
+    } catch (e) {
+        console.error('Error getting driver vehicles:', e.message);
+        return `[ERROR] Could not retrieve vehicle data. Please try again.`;
+    }
+}
+
+/**
+ * Handle natural language queries
+ */
+async function handleNaturalQuery(msg, text) {
+    const lowerText = text.toLowerCase();
+    
+    // "fuel today" - Today's summary
+    if (lowerText.includes('fuel today') || lowerText.includes('today fuel') || lowerText === 'today') {
+        return await getTodayFuelSummary();
+    }
+    
+    // "how much KCA542Q" or "fuel KCA542Q" - Vehicle query
+    const plateMatch = text.match(/([A-Z]{2,4}\s*\d{2,4}\s*[A-Z]?)/i);
+    if (plateMatch) {
+        const plate = plateMatch[1].replace(/\s+/g, '').toUpperCase();
+        return await getVehicleFuelSummary(plate);
+    }
+    
+    // "fuel this week" or "weekly fuel"
+    if (lowerText.includes('this week') || lowerText.includes('weekly')) {
+        return await getWeeklyFuelSummary();
+    }
+    
+    return null; // Not recognized
+}
+
+/**
+ * Get today's fuel summary
+ */
+async function getTodayFuelSummary() {
+    try {
+        const carLastUpdateFile = path.join(ROOT_DIR, 'data', 'car_last_update.json');
+        
+        if (!fs.existsSync(carLastUpdateFile)) {
+            return `[INFO] *No Fuel Data Today*\n\nNo fuel records available.`;
+        }
+        
+        const updates = JSON.parse(fs.readFileSync(carLastUpdateFile, 'utf8'));
+        const today = new Date().toISOString().split('T')[0];
+        
+        let todayRecords = [];
+        let totalLiters = 0;
+        let totalAmount = 0;
+        
+        for (const [plate, data] of Object.entries(updates)) {
+            if (data.timestamp && data.timestamp.startsWith(today)) {
+                todayRecords.push({ plate, ...data });
+                totalLiters += parseFloat(data.liters) || 0;
+                totalAmount += parseFloat(data.amount) || 0;
+            }
+        }
+        
+        if (todayRecords.length === 0) {
+            return `[INFO] *No Fuel Records Today*\n\nNo vehicles have fueled today yet.`;
+        }
+        
+        let response = `[TODAY] *Today's Fuel Summary*\n`;
+        response += `------------------------------------\n`;
+        response += `Date: ${new Date().toLocaleDateString()}\n\n`;
+        
+        response += `Vehicles Fueled: *${todayRecords.length}*\n`;
+        response += `Total Fuel: *${totalLiters.toFixed(1)} L*\n`;
+        response += `Total Spent: *KSH ${totalAmount.toLocaleString()}*\n\n`;
+        
+        response += `Recent:\n`;
+        todayRecords.slice(0, 5).forEach(r => {
+            response += `- ${r.plate}: ${r.liters}L by ${r.driver || 'N/A'}\n`;
+        });
+        
+        return response;
+        
+    } catch (e) {
+        console.error('Error getting today summary:', e.message);
+        return `[ERROR] Could not retrieve today's summary.`;
+    }
+}
+
+/**
+ * Get weekly fuel summary
+ */
+async function getWeeklyFuelSummary() {
+    try {
+        const summaryScript = path.join(ROOT_DIR, 'python', 'weekly_summary.py');
+        const { execSync } = require('child_process');
+        const cmd = buildPythonCommand(summaryScript, '7');
+        
+        try {
+            execSync(cmd, { cwd: ROOT_DIR, shell: true, timeout: 30000 });
+        } catch (e) {
+            // Continue and try to read existing summary
+        }
+        
+        const summaryFile = path.join(ROOT_DIR, 'data', 'weekly_summary.json');
+        if (fs.existsSync(summaryFile)) {
+            const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+            return summary.message || `[REPORT] Weekly summary generated.`;
+        }
+        
+        return `[INFO] Weekly summary not available.`;
+        
+    } catch (e) {
+        console.error('Error getting weekly summary:', e.message);
+        return `[ERROR] Could not generate weekly summary.`;
+    }
+}
+
+/**
+ * Get vehicle fuel summary
+ */
+async function getVehicleFuelSummary(plate) {
+    try {
+        const carLastUpdateFile = path.join(ROOT_DIR, 'data', 'car_last_update.json');
+        const efficiencyFile = path.join(ROOT_DIR, 'data', 'efficiency_history.json');
+        
+        let response = `[VEHICLE] *${plate}*\n`;
+        response += `------------------------------------\n\n`;
+        
+        // Get last update
+        if (fs.existsSync(carLastUpdateFile)) {
+            const updates = JSON.parse(fs.readFileSync(carLastUpdateFile, 'utf8'));
+            const data = updates[plate];
+            
+            if (data) {
+                response += `*Last Fuel-up:*\n`;
+                response += `Date: ${new Date(data.timestamp).toLocaleString()}\n`;
+                response += `Driver: ${data.driver || 'N/A'}\n`;
+                response += `Fuel: ${data.liters} L (${data.type || 'N/A'})\n`;
+                response += `Amount: KSH ${parseFloat(data.amount || 0).toLocaleString()}\n`;
+                response += `Odometer: ${parseInt(data.odometer || 0).toLocaleString()} km\n`;
+                if (data.efficiency) {
+                    response += `Efficiency: ${data.efficiency.toFixed(1)} km/L\n`;
+                }
+                response += `\n`;
+            } else {
+                response += `No recent records found for this vehicle.\n\n`;
+            }
+        }
+        
+        // Get efficiency history
+        if (fs.existsSync(efficiencyFile)) {
+            const history = JSON.parse(fs.readFileSync(efficiencyFile, 'utf8'));
+            const vehicleRecords = history.filter(r => r.car === plate);
+            
+            if (vehicleRecords.length > 0) {
+                const efficiencies = vehicleRecords.map(r => r.efficiency).filter(e => e > 0);
+                const avgEfficiency = efficiencies.reduce((a, b) => a + b, 0) / efficiencies.length;
+                const totalDistance = vehicleRecords.reduce((a, r) => a + (r.distance || 0), 0);
+                
+                response += `*Efficiency Stats:*\n`;
+                response += `Average: ${avgEfficiency.toFixed(1)} km/L\n`;
+                response += `Total Distance: ${totalDistance.toLocaleString()} km\n`;
+                response += `Records: ${vehicleRecords.length}\n`;
+            }
+        }
+        
+        return response;
+        
+    } catch (e) {
+        console.error('Error getting vehicle summary:', e.message);
+        return `[ERROR] Could not retrieve data for ${plate}.`;
+    }
+}
+
+/**
  * Get the fuel update guide message for !how command (available to everyone)
  */
 function getFuelUpdateGuide() {
@@ -1187,13 +1620,53 @@ function getFuelUpdateGuide() {
  */
 async function handlePublicCommand(msg, body) {
     const text = body.trim().toLowerCase();
-    const command = text.split(/\s+/)[0];
+    const parts = text.split(/\s+/);
+    const command = parts[0];
     
     if (command === '!how') {
         const guide = getFuelUpdateGuide();
         await sendGroupMessage(guide);
         console.log(`[CMD] Public command: !how`);
         return true;
+    }
+    
+    // Driver query commands
+    if (command === '!myrecords') {
+        const response = await getDriverRecords(msg);
+        await sendGroupMessage(response);
+        console.log(`[CMD] Public command: !myrecords`);
+        return true;
+    }
+    
+    if (command === '!myefficiency') {
+        const response = await getDriverEfficiency(msg);
+        await sendGroupMessage(response);
+        console.log(`[CMD] Public command: !myefficiency`);
+        return true;
+    }
+    
+    if (command === '!myvehicles') {
+        const response = await getDriverVehicles(msg);
+        await sendGroupMessage(response);
+        console.log(`[CMD] Public command: !myvehicles`);
+        return true;
+    }
+    
+    if (command === '!commands') {
+        const response = getPublicCommandsHelp();
+        await sendGroupMessage(response);
+        console.log(`[CMD] Public command: !commands`);
+        return true;
+    }
+    
+    // Natural language queries
+    if (text.startsWith('fuel ') || text.startsWith('how much ') || text.startsWith('what is ')) {
+        const response = await handleNaturalQuery(msg, text);
+        if (response) {
+            await sendGroupMessage(response);
+            console.log(`[CMD] Natural query handled`);
+            return true;
+        }
     }
     
     return false; // Not a public command
