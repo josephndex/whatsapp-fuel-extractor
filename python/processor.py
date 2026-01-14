@@ -25,7 +25,7 @@ import logging
 import fcntl
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -138,6 +138,15 @@ CAR_LAST_UPDATE_PATH = ROOT_DIR / 'data' / 'car_last_update.json'
 # Timeouts for validation (in hours)
 CAR_COOLDOWN_HOURS = 12  # Same car can't fuel within 12 hours
 EDIT_APPROVAL_TIMEOUT_MINUTES = 10
+
+# Fuel efficiency thresholds (km per liter)
+EFFICIENCY_ALERT_LOW = 4.0   # Below this = alert (possible fuel theft or vehicle issue)
+EFFICIENCY_ALERT_HIGH = 20.0  # Above this = suspicious (possible odometer tampering)
+EFFICIENCY_GOOD_MIN = 6.0     # Minimum for "good" efficiency
+EFFICIENCY_GOOD_MAX = 12.0    # Maximum for "good" efficiency
+
+# Efficiency tracking file
+EFFICIENCY_HISTORY_PATH = ROOT_DIR / 'data' / 'efficiency_history.json'
 
 # Allowed vehicle registration numbers (normalized: uppercase, no spaces)
 ALLOWED_PLATES = {
@@ -284,7 +293,7 @@ def get_car_last_update(car_plate: str) -> Optional[Dict]:
     return updates.get(normalize_plate(car_plate))
 
 
-def update_car_last_update(car_plate: str, record: Dict):
+def update_car_last_update(car_plate: str, record: Dict, efficiency: Optional[float] = None):
     """Update the last fuel record timestamp for a car plate."""
     updates = safe_json_load(CAR_LAST_UPDATE_PATH, {})
     if not isinstance(updates, dict):
@@ -297,10 +306,157 @@ def update_car_last_update(car_plate: str, record: Dict):
         'amount': record.get('amount', ''),
         'odometer': record.get('odometer', ''),
         'type': record.get('type', ''),
-        'department': record.get('department', '')
+        'department': record.get('department', ''),
+        'efficiency': efficiency  # km/L for this fill-up
     }
     
     safe_json_save(CAR_LAST_UPDATE_PATH, updates)
+
+
+def calculate_fuel_efficiency(car_plate: str, current_odometer: int, current_liters: float) -> Tuple[Optional[float], Optional[Dict]]:
+    """
+    Calculate fuel efficiency (km/L) based on previous and current odometer readings.
+    Returns (efficiency_km_per_liter, alert_info_if_needed)
+    """
+    last_update = get_car_last_update(car_plate)
+    
+    if not last_update:
+        return None, None  # First record, can't calculate
+    
+    try:
+        # Get previous odometer
+        prev_odo = int(float(str(last_update.get('odometer', 0)).replace(',', '')))
+        prev_liters = float(str(last_update.get('liters', 0)).replace(',', ''))
+        
+        if prev_odo <= 0 or current_odometer <= prev_odo:
+            return None, None  # Can't calculate without valid odometer progression
+        
+        # Distance traveled since last fuel-up
+        distance = current_odometer - prev_odo
+        
+        # Efficiency = distance traveled / fuel used in PREVIOUS fill-up
+        # (This fill-up will be used for the NEXT calculation)
+        if prev_liters <= 0:
+            return None, None
+        
+        efficiency = distance / prev_liters
+        
+        # Check for alerts
+        alert = None
+        if efficiency < EFFICIENCY_ALERT_LOW:
+            alert = {
+                'type': 'low_efficiency',
+                'severity': 'warning',
+                'efficiency': efficiency,
+                'distance': distance,
+                'liters': prev_liters,
+                'message': f'Low fuel efficiency: {efficiency:.1f} km/L (expected: {EFFICIENCY_GOOD_MIN}-{EFFICIENCY_GOOD_MAX} km/L). Possible fuel theft or vehicle issue.'
+            }
+        elif efficiency > EFFICIENCY_ALERT_HIGH:
+            alert = {
+                'type': 'high_efficiency',
+                'severity': 'warning',
+                'efficiency': efficiency,
+                'distance': distance,
+                'liters': prev_liters,
+                'message': f'Unusually high efficiency: {efficiency:.1f} km/L. Possible odometer discrepancy.'
+            }
+        
+        return efficiency, alert
+        
+    except (ValueError, TypeError) as e:
+        logger.error(f"Error calculating efficiency for {car_plate}: {e}")
+        return None, None
+
+
+def save_efficiency_record(car_plate: str, efficiency: float, distance: int, liters: float, driver: str):
+    """Save efficiency record for historical tracking."""
+    history = safe_json_load(EFFICIENCY_HISTORY_PATH, [])
+    if not isinstance(history, list):
+        history = []
+    
+    record = {
+        'timestamp': datetime.now().isoformat(),
+        'car': normalize_plate(car_plate),
+        'driver': driver,
+        'efficiency': round(efficiency, 2),
+        'distance': distance,
+        'liters': round(liters, 2)
+    }
+    
+    history.append(record)
+    
+    # Keep last 5000 records
+    if len(history) > 5000:
+        history = history[-5000:]
+    
+    safe_json_save(EFFICIENCY_HISTORY_PATH, history)
+
+
+def get_vehicle_efficiency_stats(car_plate: str, days: int = 30) -> Dict:
+    """Get efficiency statistics for a vehicle."""
+    history = safe_json_load(EFFICIENCY_HISTORY_PATH, [])
+    if not isinstance(history, list):
+        return {}
+    
+    cutoff = datetime.now() - timedelta(days=days)
+    normalized_plate = normalize_plate(car_plate)
+    
+    vehicle_records = []
+    for record in history:
+        if record.get('car') != normalized_plate:
+            continue
+        try:
+            record_time = datetime.fromisoformat(record.get('timestamp', ''))
+            if record_time >= cutoff:
+                vehicle_records.append(record)
+        except:
+            pass
+    
+    if not vehicle_records:
+        return {'car': normalized_plate, 'records': 0}
+    
+    efficiencies = [r['efficiency'] for r in vehicle_records if r.get('efficiency')]
+    total_distance = sum(r.get('distance', 0) for r in vehicle_records)
+    total_liters = sum(r.get('liters', 0) for r in vehicle_records)
+    
+    return {
+        'car': normalized_plate,
+        'records': len(vehicle_records),
+        'avg_efficiency': round(sum(efficiencies) / len(efficiencies), 2) if efficiencies else 0,
+        'min_efficiency': round(min(efficiencies), 2) if efficiencies else 0,
+        'max_efficiency': round(max(efficiencies), 2) if efficiencies else 0,
+        'total_distance': total_distance,
+        'total_liters': round(total_liters, 2),
+        'days': days
+    }
+
+
+def save_efficiency_alert(car_plate: str, driver: str, alert: Dict):
+    """Save efficiency alert for admin notification via WhatsApp."""
+    msg = f"[!] *FUEL EFFICIENCY ALERT - {car_plate}*\n"
+    msg += f"----------------------------\n\n"
+    msg += f"Driver: {driver}\n"
+    msg += f"Efficiency: *{alert['efficiency']:.1f} km/L*\n"
+    msg += f"Distance: {alert['distance']:,} km\n"
+    msg += f"Fuel Used: {alert['liters']:.1f} L\n\n"
+    
+    if alert['type'] == 'low_efficiency':
+        msg += f"[!] *LOW EFFICIENCY WARNING*\n"
+        msg += f"Expected range: {EFFICIENCY_GOOD_MIN}-{EFFICIENCY_GOOD_MAX} km/L\n"
+        msg += f"Possible causes:\n"
+        msg += f"- Fuel siphoning/theft\n"
+        msg += f"- Vehicle mechanical issues\n"
+        msg += f"- Incorrect odometer reading\n"
+    else:
+        msg += f"[?] *UNUSUALLY HIGH EFFICIENCY*\n"
+        msg += f"This may indicate:\n"
+        msg += f"- Odometer tampering\n"
+        msg += f"- Data entry error\n"
+    
+    msg += f"\n_Please investigate_"
+    
+    save_validation_error(car_plate, driver, msg, '', is_approval_request=True)
 
 
 def check_car_cooldown(car_plate: str, record: Dict) -> Tuple[bool, Optional[str]]:
@@ -437,7 +593,7 @@ def is_allowed_plate(plate: str) -> bool:
 CONFIRMATIONS_PATH = ROOT_DIR / 'data' / 'confirmations.json'
 
 
-def save_confirmation(record: Dict, sender: str):
+def save_confirmation(record: Dict, sender: str, efficiency: Optional[float] = None, distance: Optional[int] = None):
     """Save a confirmation message for the Node.js listener to send to WhatsApp."""
     # Format datetime for display
     dt_str = record.get('datetime', '')
@@ -472,6 +628,21 @@ def save_confirmation(record: Dict, sender: str):
             msg += f"Odometer: {odo:,} km\n"
         except:
             msg += f"Odometer: {record['odometer']} km\n"
+    
+    # Add fuel efficiency if calculated
+    if efficiency is not None and distance is not None:
+        msg += f"\n[STATS] *Fuel Efficiency*\n"
+        msg += f"Distance since last fill: {distance:,} km\n"
+        msg += f"Efficiency: *{efficiency:.1f} km/L*\n"
+        # Add efficiency rating
+        if EFFICIENCY_GOOD_MIN <= efficiency <= EFFICIENCY_GOOD_MAX:
+            msg += f"Rating: Good\n"
+        elif efficiency < EFFICIENCY_ALERT_LOW:
+            msg += f"Rating: Poor (check vehicle)\n"
+        elif efficiency > EFFICIENCY_ALERT_HIGH:
+            msg += f"Rating: Unusually high\n"
+        else:
+            msg += f"Rating: Normal\n"
     
     msg += f"\n_{dt_str} | {sender}_"
     
@@ -1137,11 +1308,46 @@ def process_message_file(filepath: Path, parser: FuelReportParser, exporter: Exc
                 move_to_processed(filepath)
                 logger.info(f"[OK] Processed: {filepath.name} -> {parsed.get('car', 'N/A')}")
                 
-                # Update car last update timestamp (for 12h cooldown - also stores driver info)
-                update_car_last_update(record.get('car', ''), record)
+                # Calculate fuel efficiency
+                efficiency = None
+                distance = None
+                alert = None
+                try:
+                    current_odo = int(float(str(record.get('odometer', 0)).replace(',', '')))
+                    current_liters = float(str(record.get('liters', 0)).replace(',', ''))
+                    if current_odo > 0 and current_liters > 0:
+                        efficiency, alert = calculate_fuel_efficiency(
+                            record.get('car', ''),
+                            current_odo,
+                            current_liters
+                        )
+                        if efficiency is not None:
+                            # Get distance for confirmation message
+                            last_update = get_car_last_update(record.get('car', ''))
+                            if last_update:
+                                prev_odo = int(float(str(last_update.get('odometer', 0)).replace(',', '')))
+                                distance = current_odo - prev_odo
+                                # Save efficiency record for history
+                                save_efficiency_record(
+                                    record.get('car', ''),
+                                    efficiency,
+                                    distance,
+                                    float(str(last_update.get('liters', 0)).replace(',', '')),
+                                    record.get('driver', '')
+                                )
+                                logger.info(f"[EFFICIENCY] {record.get('car', '')}: {efficiency:.1f} km/L over {distance:,} km")
+                        # Send alert if needed
+                        if alert:
+                            save_efficiency_alert(record.get('car', ''), record.get('driver', ''), alert)
+                            logger.warning(f"[ALERT] Efficiency alert for {record.get('car', '')}: {alert['type']}")
+                except Exception as e:
+                    logger.error(f"Error calculating efficiency: {e}")
                 
-                # Save confirmation for WhatsApp notification
-                save_confirmation(record, message_data.get('senderName', 'Unknown'))
+                # Update car last update timestamp (for 12h cooldown - also stores efficiency)
+                update_car_last_update(record.get('car', ''), record, efficiency)
+                
+                # Save confirmation for WhatsApp notification (with efficiency if available)
+                save_confirmation(record, message_data.get('senderName', 'Unknown'), efficiency, distance)
                 
                 # Optional: upload to Google Sheets and/or Database
                 try:

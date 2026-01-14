@@ -4,6 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Fuel Extractor{% endblock %}</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="description" content="WhatsApp Fuel Extractor - Fleet fuel monitoring and analytics">
+    <meta name="theme-color" content="#1e40af">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Fuel Extractor">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/static/manifest.json">
+    
+    <!-- Icons -->
+    <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192x192.png">
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -30,9 +45,26 @@
             from { transform: translateX(100%); opacity: 0; }
             to { transform: translateX(0); opacity: 1; }
         }
+        /* PWA Install prompt styling */
+        .pwa-install-banner {
+            background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
+    <!-- PWA Install Banner (hidden by default) -->
+    <div id="pwa-install-banner" class="hidden pwa-install-banner text-white p-3 text-center">
+        <div class="flex items-center justify-center gap-4 flex-wrap">
+            <span><i class="fas fa-download mr-2"></i>Install Fuel Extractor for quick access</span>
+            <button id="pwa-install-btn" class="px-4 py-1 bg-white text-blue-600 rounded-lg font-semibold hover:bg-gray-100 text-sm">
+                Install App
+            </button>
+            <button id="pwa-dismiss-btn" class="text-white/70 hover:text-white text-sm">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
     
@@ -292,6 +324,66 @@
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
             window.FuelExtractor.init();
+        });
+    </script>
+
+    <!-- PWA Service Worker and Install Prompt -->
+    <script>
+        // Register Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js')
+                    .then((registration) => {
+                        console.log('[PWA] Service Worker registered:', registration.scope);
+                    })
+                    .catch((error) => {
+                        console.log('[PWA] Service Worker registration failed:', error);
+                    });
+            });
+        }
+
+        // PWA Install Prompt
+        let deferredPrompt;
+        const installBanner = document.getElementById('pwa-install-banner');
+        const installBtn = document.getElementById('pwa-install-btn');
+        const dismissBtn = document.getElementById('pwa-dismiss-btn');
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            // Prevent Chrome 67+ from showing the mini-infobar
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            // Check if user has dismissed before
+            if (localStorage.getItem('pwa-install-dismissed') !== 'true') {
+                installBanner.classList.remove('hidden');
+            }
+        });
+
+        if (installBtn) {
+            installBtn.addEventListener('click', async () => {
+                if (!deferredPrompt) return;
+                
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                console.log('[PWA] Install outcome:', outcome);
+                
+                deferredPrompt = null;
+                installBanner.classList.add('hidden');
+            });
+        }
+
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', () => {
+                installBanner.classList.add('hidden');
+                localStorage.setItem('pwa-install-dismissed', 'true');
+            });
+        }
+
+        // Hide banner if app is already installed
+        window.addEventListener('appinstalled', () => {
+            console.log('[PWA] App installed');
+            installBanner.classList.add('hidden');
+            deferredPrompt = null;
         });
     </script>
 

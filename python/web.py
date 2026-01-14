@@ -129,6 +129,7 @@ DATA_DIR = ROOT_DIR / 'data'
 CONFIG_PATH = ROOT_DIR / 'config.json'
 TEMPLATES_DIR = Path(__file__).parent / 'templates'
 STATIC_DIR = Path(__file__).parent / 'static'
+EFFICIENCY_HISTORY_PATH = DATA_DIR / 'efficiency_history.json'
 
 # Load environment
 load_env(str(ROOT_DIR / '.env'))
@@ -566,6 +567,89 @@ def load_pending_approvals() -> List[Dict]:
     return [a for a in approvals if isinstance(a, dict) and a.get('status') == 'pending']
 
 
+def load_efficiency_history(days: int = 30) -> List[Dict]:
+    """Load fuel efficiency history records."""
+    history = safe_json_load(EFFICIENCY_HISTORY_PATH, [])
+    if not isinstance(history, list):
+        return []
+    
+    cutoff = datetime.now() - timedelta(days=days)
+    filtered = []
+    
+    for record in history:
+        try:
+            record_time = datetime.fromisoformat(record.get('timestamp', ''))
+            if record_time >= cutoff:
+                filtered.append(record)
+        except:
+            pass
+    
+    return filtered
+
+
+def get_efficiency_stats(days: int = 30) -> Dict:
+    """Calculate fleet-wide efficiency statistics."""
+    history = load_efficiency_history(days)
+    
+    if not history:
+        return {
+            'records': 0,
+            'avg_efficiency': 0,
+            'min_efficiency': 0,
+            'max_efficiency': 0,
+            'total_distance': 0,
+            'total_liters': 0,
+            'by_vehicle': [],
+            'alerts': {'low': 0, 'high': 0}
+        }
+    
+    efficiencies = [r['efficiency'] for r in history if r.get('efficiency')]
+    total_distance = sum(r.get('distance', 0) for r in history)
+    total_liters = sum(r.get('liters', 0) for r in history)
+    
+    # Count alerts (thresholds from processor)
+    EFFICIENCY_ALERT_LOW = 4.0
+    EFFICIENCY_ALERT_HIGH = 20.0
+    low_alerts = sum(1 for e in efficiencies if e < EFFICIENCY_ALERT_LOW)
+    high_alerts = sum(1 for e in efficiencies if e > EFFICIENCY_ALERT_HIGH)
+    
+    # Group by vehicle
+    vehicle_stats = {}
+    for record in history:
+        car = record.get('car', 'Unknown')
+        if car not in vehicle_stats:
+            vehicle_stats[car] = {'efficiencies': [], 'distance': 0, 'liters': 0}
+        vehicle_stats[car]['efficiencies'].append(record.get('efficiency', 0))
+        vehicle_stats[car]['distance'] += record.get('distance', 0)
+        vehicle_stats[car]['liters'] += record.get('liters', 0)
+    
+    by_vehicle = []
+    for car, stats in vehicle_stats.items():
+        effs = [e for e in stats['efficiencies'] if e]
+        if effs:
+            by_vehicle.append({
+                'car': car,
+                'avg_efficiency': round(sum(effs) / len(effs), 2),
+                'records': len(effs),
+                'total_distance': stats['distance'],
+                'total_liters': round(stats['liters'], 2)
+            })
+    
+    # Sort by efficiency (best first)
+    by_vehicle.sort(key=lambda x: x['avg_efficiency'], reverse=True)
+    
+    return {
+        'records': len(history),
+        'avg_efficiency': round(sum(efficiencies) / len(efficiencies), 2) if efficiencies else 0,
+        'min_efficiency': round(min(efficiencies), 2) if efficiencies else 0,
+        'max_efficiency': round(max(efficiencies), 2) if efficiencies else 0,
+        'total_distance': total_distance,
+        'total_liters': round(total_liters, 2),
+        'by_vehicle': by_vehicle[:20],  # Top 20
+        'alerts': {'low': low_alerts, 'high': high_alerts}
+    }
+
+
 def load_fleet() -> List[str]:
     """Load fleet vehicles from processor.py"""
     # Read ALLOWED_PLATES from processor.py
@@ -708,6 +792,26 @@ def get_chart_data(records: List[Dict], days: int = 7) -> Dict:
         },
         'top_vehicles': dict(sorted(top_vehicles.items(), key=lambda x: x[1], reverse=True)[:10]),
     }
+
+
+# PWA Routes - Service Worker needs to be at root for proper scope
+@app.get("/sw.js")
+async def service_worker():
+    """Serve service worker from root for proper PWA scope"""
+    sw_path = STATIC_DIR / 'sw.js'
+    if sw_path.exists():
+        content = sw_path.read_text()
+        return HTMLResponse(content=content, media_type="application/javascript")
+    raise HTTPException(status_code=404, detail="Service worker not found")
+
+
+@app.get("/offline.html", response_class=HTMLResponse)
+async def offline_page():
+    """Serve offline fallback page"""
+    offline_path = STATIC_DIR / 'offline.html'
+    if offline_path.exists():
+        return HTMLResponse(content=offline_path.read_text())
+    return HTMLResponse(content="<h1>Offline</h1><p>Please check your connection.</p>")
 
 
 # Routes
@@ -996,6 +1100,37 @@ async def api_analytics(
             'end': end_dt.isoformat() if end_dt else None,
         },
         'source': actual_source,
+    }
+
+
+@app.get("/api/efficiency")
+async def api_efficiency(days: int = 30):
+    """API endpoint for fuel efficiency statistics"""
+    return get_efficiency_stats(days)
+
+
+@app.get("/api/efficiency/{car}")
+async def api_efficiency_vehicle(car: str, days: int = 30):
+    """API endpoint for vehicle-specific efficiency data"""
+    history = load_efficiency_history(days)
+    normalized_car = car.upper().replace(' ', '').replace('-', '')
+    
+    vehicle_records = [r for r in history if r.get('car', '').replace(' ', '').replace('-', '') == normalized_car]
+    
+    if not vehicle_records:
+        return {'car': car, 'records': 0, 'message': 'No efficiency data found'}
+    
+    efficiencies = [r['efficiency'] for r in vehicle_records if r.get('efficiency')]
+    
+    return {
+        'car': car,
+        'records': len(vehicle_records),
+        'avg_efficiency': round(sum(efficiencies) / len(efficiencies), 2) if efficiencies else 0,
+        'min_efficiency': round(min(efficiencies), 2) if efficiencies else 0,
+        'max_efficiency': round(max(efficiencies), 2) if efficiencies else 0,
+        'total_distance': sum(r.get('distance', 0) for r in vehicle_records),
+        'total_liters': round(sum(r.get('liters', 0) for r in vehicle_records), 2),
+        'history': vehicle_records[-10:]  # Last 10 records
     }
 
 
