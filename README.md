@@ -1,3 +1,24 @@
+## Docker & zrock Setup (Windows)
+
+1. **Clone this branch:**
+  ```sh
+  git clone -b ilogistics-system <repo-url>
+  ```
+2. **Build and run with Docker Compose (on Windows):**
+  - Make sure `Dockerfile` and `docker-compose.yml` are present.
+  - Build and start:
+    ```sh
+    docker-compose build
+    docker-compose up -d
+    ```
+3. **Tunnel with zrock:**
+  - Download and install zrock (https://zrock.io)
+  - Start tunnel:
+    ```sh
+    zrock tunnel --local-port 8000 --remote-name ilogistics-system
+    ```
+  - Access from anywhere via zrock remote URL
+  - See docker-compose.yml for quick reference.
 # WhatsApp Fuel Extractor
 
 Automatically extract fueling details from WhatsApp group messages and save them to Excel with real-time validation, admin approval workflows, and comprehensive reporting.
@@ -63,13 +84,12 @@ Anyone in the group can use these commands:
 | `!commands` | Show available commands |
 
 **Natural Language Queries:**
-| Query | Description |
+...existing code...
+
 |-------|-------------|
 | `fuel today` | Today's fuel summary |
 | `how much KCA542Q` | Vehicle fuel usage |
 | `fuel this week` | Weekly fuel summary |
-
-## How It Works
 
 ```
 Driver sends message → Listener captures → Processor validates → Confirmation/Error/Approval
@@ -77,7 +97,6 @@ Driver sends message → Listener captures → Processor validates → Confirmat
 
 ### Validation Flow
 1. **Message received** in WhatsApp group starting with "FUEL UPDATE"
-2. **Required fields check** - All 7 fields must be present
 3. **Fleet validation** - Vehicle plate must be in approved list
 4. **12-hour cooldown** - Check if car already fueled recently
 5. **Odometer validation** - Reading must be > previous for same car
@@ -111,20 +130,11 @@ WHATSAPP FUEL EXTRACTOR/
 └── data/
     ├── raw_messages/        # Incoming messages (JSON)
     ├── processed/           # Successfully processed
-    ├── errors/              # Failed/pending messages
     ├── output/              # Excel files
     ├── session/             # WhatsApp session
-    ├── confirmations.json   # Pending confirmations
-    ├── validation_errors.json # Pending error notifications
-    ├── pending_approvals.json # Pending admin approvals
     ├── car_last_update.json # Car cooldown tracking
     └── efficiency_history.json # Fuel efficiency records
-```
-
 ## Prerequisites
-
-- **Node.js** 18 or higher
-- **Python** 3.9 or higher (conda recommended)
 
 ## Quick Start
 

@@ -200,6 +200,70 @@ if STATIC_DIR.exists():
 # Templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+# --- Admin Panel & Mobile View ---
+from fastapi import Response, Cookie
+from fastapi.responses import RedirectResponse
+
+ADMIN_PASSWORD = "Nala2024"
+
+def is_admin_authenticated(request: Request) -> bool:
+    return request.cookies.get("admin_auth") == "1"
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_login_page(request: Request):
+    if is_admin_authenticated(request):
+        return templates.TemplateResponse("admin.html", {"request": request})
+    return templates.TemplateResponse("admin_login.html", {"request": request, "error": None})
+
+@app.post("/admin", response_class=HTMLResponse)
+async def admin_login(request: Request, password: str = Form(...)):
+    if password == ADMIN_PASSWORD:
+        response = RedirectResponse("/admin", status_code=302)
+        response.set_cookie(key="admin_auth", value="1", httponly=True, max_age=3600)
+        return response
+    return templates.TemplateResponse("admin_login.html", {"request": request, "error": "Incorrect password."})
+
+@app.get("/admin/logout")
+async def admin_logout():
+    response = RedirectResponse("/admin", status_code=302)
+    response.delete_cookie("admin_auth")
+    return response
+
+# --- Admin API Endpoints ---
+@app.post("/api/admin/{action}")
+async def admin_action(action: str, request: Request):
+    if not is_admin_authenticated(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    # Dummy implementations for now
+    if action == "start_listener":
+        # TODO: Implement actual start logic
+        return {"message": "Listener started"}
+    if action == "stop_listener":
+        return {"message": "Listener stopped"}
+    if action == "start_processor":
+        return {"message": "Processor started"}
+    if action == "stop_processor":
+        return {"message": "Processor stopped"}
+    if action == "reset_system":
+        return {"message": "System reset"}
+    if action == "scan_qr":
+        return {"message": "QR code scan triggered"}
+    return {"message": "Unknown action"}
+
+@app.get("/api/admin/status")
+async def admin_status(request: Request):
+    if not is_admin_authenticated(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    # Dummy status for now
+    return {"listener": "running", "processor": "running"}
+
+@app.get("/api/admin/logs")
+async def admin_logs(request: Request):
+    if not is_admin_authenticated(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    # Dummy logs for now
+    return "[OK] Listener running\n[OK] Processor running\n[MSG] System healthy"
+
 
 def load_config() -> dict:
     """Load configuration with error handling"""

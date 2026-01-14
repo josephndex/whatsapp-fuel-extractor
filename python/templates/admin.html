@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container-fluid" style="max-width:900px;margin:auto;padding:2em;">
+  <h2>Admin Panel</h2>
+  <div id="status-panel" class="mb-4">
+    <h4>Status</h4>
+    <ul>
+      <li>Listener: <span id="listener-status">Loading...</span></li>
+      <li>Processor: <span id="processor-status">Loading...</span></li>
+    </ul>
+  </div>
+  <div id="controls-panel" class="mb-4">
+    <h4>Controls</h4>
+    <button class="btn btn-success" onclick="adminAction('start_listener')">Start Listener</button>
+    <button class="btn btn-danger" onclick="adminAction('stop_listener')">Stop Listener</button>
+    <button class="btn btn-success" onclick="adminAction('start_processor')">Start Processor</button>
+    <button class="btn btn-danger" onclick="adminAction('stop_processor')">Stop Processor</button>
+    <button class="btn btn-warning" onclick="adminAction('reset_system')">Reset System</button>
+    <button class="btn btn-info" onclick="adminAction('scan_qr')">Scan WhatsApp QR</button>
+  </div>
+  <div id="logs-panel" class="mb-4">
+    <h4>Logs</h4>
+    <pre id="admin-logs" style="background:#222;color:#eee;padding:1em;height:300px;overflow:auto;">Loading logs...</pre>
+  </div>
+</div>
+<script>
+function adminAction(action) {
+  fetch('/api/admin/' + action, {method:'POST'})
+    .then(r => r.json())
+    .then(d => alert(d.message || 'Action complete'));
+}
+function updateStatus() {
+  fetch('/api/admin/status').then(r=>r.json()).then(d=>{
+    document.getElementById('listener-status').textContent = d.listener;
+    document.getElementById('processor-status').textContent = d.processor;
+  });
+}
+function updateLogs() {
+  fetch('/api/admin/logs').then(r=>r.text()).then(d=>{
+    document.getElementById('admin-logs').textContent = d;
+  });
+}
+setInterval(updateStatus, 3000);
+setInterval(updateLogs, 3000);
+updateStatus();
+updateLogs();
+</script>
+<style>
+@media (max-width:600px) {
+  .container-fluid { padding:0.5em; }
+  h2,h4 { font-size:1.2em; }
+  button { margin-bottom:0.5em; width:100%; }
+}
+</style>
+{% endblock %}

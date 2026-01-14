@@ -1,15 +1,19 @@
-# GitHub Copilot Instructions for WhatsApp Fuel Extractor
+# GitHub Copilot Instructions for WhatsApp Fuel Extractor (ilogistics-system branch)
 
 ## Project Overview
 
-A **dual-language automation tool** that captures fueling reports from a WhatsApp group and exports them to Excel with real-time validation, admin approval workflows, and comprehensive reporting.
+A **dual-language automation tool** that captures fueling reports from a WhatsApp group and exports them to Excel with real-time validation, admin approval workflows, and comprehensive reporting. Now bundled for Docker deployment and remote access via zrock tunneling (see README for setup).
 
 **Stack:**
 - **Node.js 18+** - WhatsApp connectivity (whatsapp-web.js), admin commands, edit detection
 - **Python 3.9+** - Message parsing, validation, Excel export, summary generation
 - **JSON files** - Message queue, approvals, cooldown tracking
 
-## Architecture
+## Architecture & Deployment
+
+### Docker & zrock
+- Build Docker image and run with Docker Compose on Windows (see README)
+- Tunnel with zrock for remote access (see docker-compose.yml for command)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -31,7 +35,7 @@ A **dual-language automation tool** that captures fueling reports from a WhatsAp
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Key Files
+## Key Files & Admin Panel
 
 | File | Language | Lines | Purpose |
 |------|----------|-------|---------|
@@ -324,7 +328,17 @@ CAR_COOLDOWN_HOURS = 12           # Same car can't fuel within 12 hours
 EDIT_APPROVAL_TIMEOUT_MINUTES = 10  # Edit detection window
 ```
 
-## Progressive Web App (PWA)
+## Progressive Web App (PWA) & Mobile View
+
+- Dashboard is fully responsive (mobile & desktop)
+- Admin panel at `/admin` (password: `Nala2024`)
+  - Start/stop listener
+  - Start/stop processor
+  - Reset system
+  - Scan WhatsApp QR code
+  - View logs (listener/processor)
+  - Status: running/off for each service
+  - All CLI functions accessible
 
 The web dashboard is a PWA with offline support:
 
@@ -341,7 +355,10 @@ The web dashboard is a PWA with offline support:
 - Cache-first strategy for static assets
 - App shortcuts: Dashboard, Records, Analytics, Approvals
 
-## Dependencies
+## Dependencies & Setup
+
+- See README for Dockerfile template and zrock instructions
+- Do NOT build Docker image in this repo—do it on your Windows machine
 
 ### Node.js
 - `whatsapp-web.js` - WhatsApp Web client

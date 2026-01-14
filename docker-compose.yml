@@ -1,0 +1,18 @@
+
+# --- Zrock Tunnel Setup ---
+# After starting the container, run the following command on your Windows machine:
+#   zrock tunnel --local-port 8000 --remote-name ilogistics-system
+# This will expose the dashboard remotely via zrock.
+
+version: '3.8'
+services:
+  ilogistics-system:
+    build: .
+    container_name: ilogistics-system
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
