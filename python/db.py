@@ -123,6 +123,64 @@ class Database:
             return False
 
 
+    def get_all_records(self, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> list:
+        """Fetch all fuel records with optional date filtering."""
+        try:
+            from sqlalchemy import select, text
+            
+            query = select(self.fuel_records)
+            
+            # Apply date filters if provided
+            conditions = []
+            if start_date:
+                conditions.append(self.fuel_records.c.created_at >= start_date)
+            if end_date:
+                conditions.append(self.fuel_records.c.created_at <= end_date)
+            
+            if conditions:
+                for cond in conditions:
+                    query = query.where(cond)
+            
+            query = query.order_by(self.fuel_records.c.created_at.desc())
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(query)
+                rows = result.fetchall()
+                
+                records = []
+                for row in rows:
+                    # Convert row to dict
+                    record = {
+                        'id': row.id if hasattr(row, 'id') else row[0],
+                        'created_at': row.created_at if hasattr(row, 'created_at') else row[1],
+                        'datetime': row.datetime if hasattr(row, 'datetime') else row[2],
+                        'department': row.department if hasattr(row, 'department') else row[3],
+                        'driver': row.driver if hasattr(row, 'driver') else row[4],
+                        'car': row.car if hasattr(row, 'car') else row[5],
+                        'liters': row.liters if hasattr(row, 'liters') else row[6],
+                        'amount': row.amount if hasattr(row, 'amount') else row[7],
+                        'type': row.type if hasattr(row, 'type') else row[8],
+                        'odometer': row.odometer if hasattr(row, 'odometer') else row[9],
+                        'sender': row.sender if hasattr(row, 'sender') else row[10],
+                    }
+                    records.append(record)
+                return records
+        except SQLAlchemyError as e:
+            print(f"Database query error: {e}")
+            return []
+
+    def get_record_count(self) -> int:
+        """Get total number of fuel records."""
+        try:
+            from sqlalchemy import func, select
+            query = select(func.count()).select_from(self.fuel_records)
+            with self.engine.connect() as conn:
+                result = conn.execute(query)
+                return result.scalar() or 0
+        except SQLAlchemyError:
+            return 0
+
+
 def _to_float(v):
     try:
         return float(v) if v is not None else None

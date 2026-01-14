@@ -110,11 +110,18 @@ except ImportError:
     PANDAS_AVAILABLE = False
 
 try:
-    from .env import load_env
+    from .env import load_env, get_env
     from .db import Database
+    from .google_sheets_uploader import GoogleSheetsUploader
 except ImportError:
-    from env import load_env
+    from env import load_env, get_env
     from db import Database
+    from google_sheets_uploader import GoogleSheetsUploader
+
+# Data source constants
+DATA_SOURCE_EXCEL = 'excel'
+DATA_SOURCE_DB = 'database'
+DATA_SOURCE_SHEETS = 'sheets'
 
 # Paths
 ROOT_DIR = Path(__file__).parent.parent
@@ -317,6 +324,169 @@ def load_records(days: int = 30) -> List[Dict]:
         print(f"Error loading records: {e}")
     
     return records
+
+
+def load_records_from_db(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[Dict]:
+    """Load fuel records from the database with optional date filtering."""
+    records = []
+    
+    try:
+        db = Database()
+        if not db.engine:
+            print("Database not configured")
+            return records
+        
+        raw_records = db.get_all_records(start_date=start_date, end_date=end_date)
+        
+        for row in raw_records:
+            # Parse datetime
+            dt_val = row.get('datetime') or row.get('created_at')
+            parsed_dt = parse_datetime_robust(dt_val)
+            dt_str = parsed_dt.isoformat() if parsed_dt else str(dt_val) if dt_val else ''
+            
+            record = {
+                'datetime': dt_str,
+                'datetime_obj': parsed_dt,
+                'department': str(row.get('department', '') or ''),
+                'driver': str(row.get('driver', '') or ''),
+                'car': str(row.get('car', '') or ''),
+                'liters': float(row.get('liters', 0) or 0),
+                'amount': float(row.get('amount', 0) or 0),
+                'type': str(row.get('type', '') or ''),
+                'odometer': int(row.get('odometer', 0) or 0),
+            }
+            records.append(record)
+        
+        # Sort by datetime descending
+        records.sort(key=lambda x: x['datetime_obj'] or datetime.min, reverse=True)
+        
+    except Exception as e:
+        print(f"Error loading records from database: {e}")
+    
+    return records
+
+
+def load_records_from_sheets(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[Dict]:
+    """Load fuel records from Google Sheets with optional date filtering."""
+    records = []
+    
+    try:
+        config = load_config()
+        spreadsheet_id = config.get('google_sheets', {}).get('spreadsheetId') or get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
+        worksheet_name = config.get('google_sheets', {}).get('worksheetName', 'FUEL RECORDS')
+        
+        if not spreadsheet_id:
+            print("Google Sheets not configured (no spreadsheet ID)")
+            return records
+        
+        uploader = GoogleSheetsUploader(spreadsheet_id=spreadsheet_id, worksheet_name=worksheet_name)
+        raw_records = uploader.get_all_records()
+        
+        for row in raw_records:
+            # Parse datetime
+            dt_val = row.get('datetime', '')
+            parsed_dt = parse_datetime_robust(dt_val)
+            
+            # Apply date filter
+            if parsed_dt:
+                if start_date and parsed_dt < start_date:
+                    continue
+                if end_date and parsed_dt > end_date:
+                    continue
+            
+            dt_str = parsed_dt.isoformat() if parsed_dt else str(dt_val)
+            
+            # Parse numeric fields
+            try:
+                liters = float(str(row.get('liters', '0')).replace(',', '')) if row.get('liters') else 0
+            except:
+                liters = 0
+            
+            try:
+                amount = float(str(row.get('amount', '0')).replace(',', '')) if row.get('amount') else 0
+            except:
+                amount = 0
+            
+            try:
+                odometer = int(float(str(row.get('odometer', '0')).replace(',', ''))) if row.get('odometer') else 0
+            except:
+                odometer = 0
+            
+            record = {
+                'datetime': dt_str,
+                'datetime_obj': parsed_dt,
+                'department': str(row.get('department', '')),
+                'driver': str(row.get('driver', '')),
+                'car': str(row.get('car', '')),
+                'liters': liters,
+                'amount': amount,
+                'type': str(row.get('type', '')),
+                'odometer': odometer,
+            }
+            records.append(record)
+        
+        # Sort by datetime descending
+        records.sort(key=lambda x: x['datetime_obj'] or datetime.min, reverse=True)
+        
+    except Exception as e:
+        print(f"Error loading records from Google Sheets: {e}")
+    
+    return records
+
+
+def load_records_by_source(source: str = DATA_SOURCE_EXCEL, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[Dict]:
+    """Load records from the specified data source with date filtering."""
+    if source == DATA_SOURCE_DB:
+        return load_records_from_db(start_date=start_date, end_date=end_date)
+    elif source == DATA_SOURCE_SHEETS:
+        return load_records_from_sheets(start_date=start_date, end_date=end_date)
+    else:
+        # Default to Excel
+        records = load_records()
+        
+        # Apply date filter for Excel
+        if start_date or end_date:
+            filtered = []
+            for r in records:
+                dt = r.get('datetime_obj')
+                if dt:
+                    if start_date and dt < start_date:
+                        continue
+                    if end_date and dt > end_date:
+                        continue
+                filtered.append(r)
+            return filtered
+        return records
+
+
+def get_available_data_sources() -> Dict[str, bool]:
+    """Check which data sources are available and configured."""
+    sources = {
+        DATA_SOURCE_EXCEL: get_excel_path().exists(),
+        DATA_SOURCE_DB: False,
+        DATA_SOURCE_SHEETS: False,
+    }
+    
+    # Check database
+    try:
+        db = Database()
+        if db.engine:
+            # Try a simple query
+            count = db.get_record_count()
+            sources[DATA_SOURCE_DB] = True
+    except:
+        pass
+    
+    # Check Google Sheets
+    try:
+        config = load_config()
+        spreadsheet_id = config.get('google_sheets', {}).get('spreadsheetId') or get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
+        if spreadsheet_id:
+            sources[DATA_SOURCE_SHEETS] = True
+    except:
+        pass
+    
+    return sources
 
 
 def load_pending_approvals() -> List[Dict]:
@@ -638,16 +808,127 @@ async def fleet_page(request: Request):
 
 
 @app.get("/analytics", response_class=HTMLResponse)
-async def analytics_page(request: Request, days: int = 30):
-    """Analytics page with more charts"""
-    records = load_records()
-    chart_data = get_chart_data(records, days=days)
+async def analytics_page(
+    request: Request, 
+    days: int = 30,
+    source: str = DATA_SOURCE_EXCEL,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Analytics page with data source selection and date range filtering"""
+    
+    # Parse date strings if provided
+    start_dt = None
+    end_dt = None
+    
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        except:
+            pass
+    
+    if end_date:
+        try:
+            # Set to end of day
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except:
+            pass
+    
+    # If no custom dates, use days parameter
+    if not start_dt and not end_dt and days:
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=days)
+    
+    # Load records from selected source
+    records = load_records_by_source(source=source, start_date=start_dt, end_date=end_dt)
+    
+    # Get chart data (don't apply days filter again since we already filtered)
+    chart_data = get_chart_data(records, days=365)  # Use large value since records are pre-filtered
+    
+    # Get available data sources
+    available_sources = get_available_data_sources()
+    
+    # Calculate summary stats for the selected period
+    total_liters = sum(r['liters'] for r in records)
+    total_amount = sum(r['amount'] for r in records)
+    unique_vehicles = len(set(r['car'] for r in records if r['car']))
+    unique_drivers = len(set(r['driver'] for r in records if r['driver']))
+    
+    summary_stats = {
+        'total_records': len(records),
+        'total_liters': total_liters,
+        'total_amount': total_amount,
+        'unique_vehicles': unique_vehicles,
+        'unique_drivers': unique_drivers,
+        'avg_per_fueling': total_liters / len(records) if records else 0,
+        'avg_cost_per_liter': total_amount / total_liters if total_liters > 0 else 0,
+    }
     
     return templates.TemplateResponse("analytics.html", {
         "request": request,
         "chart_data": json.dumps(chart_data),
         "days": days,
+        "source": source,
+        "available_sources": available_sources,
+        "start_date": start_date or (start_dt.strftime('%Y-%m-%d') if start_dt else ''),
+        "end_date": end_date or (end_dt.strftime('%Y-%m-%d') if end_dt else ''),
+        "summary_stats": summary_stats,
+        "DATA_SOURCE_EXCEL": DATA_SOURCE_EXCEL,
+        "DATA_SOURCE_DB": DATA_SOURCE_DB,
+        "DATA_SOURCE_SHEETS": DATA_SOURCE_SHEETS,
     })
+
+
+@app.get("/api/analytics")
+async def api_analytics(
+    source: str = DATA_SOURCE_EXCEL,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    days: int = 30
+):
+    """API endpoint for analytics data with source and date filtering"""
+    
+    # Parse date strings
+    start_dt = None
+    end_dt = None
+    
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        except:
+            pass
+    
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except:
+            pass
+    
+    if not start_dt and not end_dt and days:
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=days)
+    
+    records = load_records_by_source(source=source, start_date=start_dt, end_date=end_dt)
+    chart_data = get_chart_data(records, days=365)
+    
+    total_liters = sum(r['liters'] for r in records)
+    total_amount = sum(r['amount'] for r in records)
+    
+    return {
+        'chart_data': chart_data,
+        'summary': {
+            'total_records': len(records),
+            'total_liters': total_liters,
+            'total_amount': total_amount,
+            'unique_vehicles': len(set(r['car'] for r in records if r['car'])),
+            'unique_drivers': len(set(r['driver'] for r in records if r['driver'])),
+        },
+        'date_range': {
+            'start': start_dt.isoformat() if start_dt else None,
+            'end': end_dt.isoformat() if end_dt else None,
+        },
+        'source': source,
+    }
 
 
 @app.get("/api/stats")

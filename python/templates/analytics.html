@@ -3,26 +3,118 @@
 {% block title %}Analytics - Fuel Extractor{% endblock %}
 
 {% block content %}
-<div class="mb-8 flex items-center justify-between">
-    <div>
-        <h1 class="text-3xl font-bold text-gray-800">Analytics</h1>
-        <p class="text-gray-600">Detailed fuel consumption analysis</p>
+<div class="mb-8">
+    <div class="flex items-center justify-between flex-wrap gap-4">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-800">Analytics</h1>
+            <p class="text-gray-600">Detailed fuel consumption analysis</p>
+        </div>
     </div>
-    
-    <!-- Period Selector -->
-    <div class="flex gap-2">
-        <a href="?days=7" class="px-4 py-2 rounded-lg {% if days == 7 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
-            7 Days
-        </a>
-        <a href="?days=14" class="px-4 py-2 rounded-lg {% if days == 14 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
-            14 Days
-        </a>
-        <a href="?days=30" class="px-4 py-2 rounded-lg {% if days == 30 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
-            30 Days
-        </a>
-        <a href="?days=90" class="px-4 py-2 rounded-lg {% if days == 90 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
-            90 Days
-        </a>
+</div>
+
+<!-- Filters Card -->
+<div class="bg-white rounded-xl shadow p-6 mb-8">
+    <form id="analyticsForm" method="get" class="space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+            <!-- Data Source -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Data Source</label>
+                <select name="source" id="sourceSelect" class="w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                    <option value="{{ DATA_SOURCE_EXCEL }}" {% if source == DATA_SOURCE_EXCEL %}selected{% endif %}
+                        {% if not available_sources.get(DATA_SOURCE_EXCEL) %}disabled{% endif %}>
+                        Excel File {% if not available_sources.get(DATA_SOURCE_EXCEL) %}(Not Available){% endif %}
+                    </option>
+                    <option value="{{ DATA_SOURCE_DB }}" {% if source == DATA_SOURCE_DB %}selected{% endif %}
+                        {% if not available_sources.get(DATA_SOURCE_DB) %}disabled{% endif %}>
+                        Database {% if not available_sources.get(DATA_SOURCE_DB) %}(Not Configured){% endif %}
+                    </option>
+                    <option value="{{ DATA_SOURCE_SHEETS }}" {% if source == DATA_SOURCE_SHEETS %}selected{% endif %}
+                        {% if not available_sources.get(DATA_SOURCE_SHEETS) %}disabled{% endif %}>
+                        Google Sheets {% if not available_sources.get(DATA_SOURCE_SHEETS) %}(Not Configured){% endif %}
+                    </option>
+                </select>
+            </div>
+            
+            <!-- Start Date -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                <input type="date" name="start_date" id="startDate" value="{{ start_date }}"
+                    class="w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            
+            <!-- End Date -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                <input type="date" name="end_date" id="endDate" value="{{ end_date }}"
+                    class="w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            
+            <!-- Quick Period -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Quick Select</label>
+                <div class="flex gap-1">
+                    <button type="button" onclick="setPeriod(7)" 
+                        class="px-3 py-2 text-sm rounded-lg {% if days == 7 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
+                        7D
+                    </button>
+                    <button type="button" onclick="setPeriod(14)" 
+                        class="px-3 py-2 text-sm rounded-lg {% if days == 14 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
+                        14D
+                    </button>
+                    <button type="button" onclick="setPeriod(30)" 
+                        class="px-3 py-2 text-sm rounded-lg {% if days == 30 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
+                        30D
+                    </button>
+                    <button type="button" onclick="setPeriod(90)" 
+                        class="px-3 py-2 text-sm rounded-lg {% if days == 90 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
+                        90D
+                    </button>
+                    <button type="button" onclick="setPeriod(365)" 
+                        class="px-3 py-2 text-sm rounded-lg {% if days == 365 %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
+                        1Y
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Apply Button -->
+            <div>
+                <button type="submit" 
+                    class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2">
+                    <i class="fas fa-filter"></i>
+                    Apply Filters
+                </button>
+            </div>
+        </div>
+        
+        <input type="hidden" name="days" id="daysInput" value="{{ days }}">
+    </form>
+</div>
+
+<!-- Summary Stats Cards -->
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+    <div class="bg-white rounded-xl shadow p-4 text-center">
+        <p class="text-gray-500 text-sm">Total Records</p>
+        <p class="text-2xl font-bold text-gray-800">{{ summary_stats.total_records }}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 text-center">
+        <p class="text-gray-500 text-sm">Total Fuel</p>
+        <p class="text-2xl font-bold text-blue-600">{{ "{:,.1f}".format(summary_stats.total_liters) }} L</p>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 text-center">
+        <p class="text-gray-500 text-sm">Total Spent</p>
+        <p class="text-2xl font-bold text-green-600">KSH {{ "{:,.0f}".format(summary_stats.total_amount) }}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 text-center">
+        <p class="text-gray-500 text-sm">Vehicles</p>
+        <p class="text-2xl font-bold text-purple-600">{{ summary_stats.unique_vehicles }}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 text-center">
+        <p class="text-gray-500 text-sm">Drivers</p>
+        <p class="text-2xl font-bold text-orange-600">{{ summary_stats.unique_drivers }}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 text-center">
+        <p class="text-gray-500 text-sm">Avg Cost/Liter</p>
+        <p class="text-2xl font-bold text-gray-800">KSH {{ "{:,.2f}".format(summary_stats.avg_cost_per_liter) }}</p>
     </div>
 </div>
 
@@ -54,9 +146,20 @@
 </div>
 
 <!-- Top Vehicles -->
-<div class="bg-white rounded-xl shadow p-6">
+<div class="bg-white rounded-xl shadow p-6 mb-8">
     <h3 class="text-lg font-semibold text-gray-800 mb-4">Top 10 Vehicles by Spending</h3>
     <canvas id="vehiclesChart" height="100"></canvas>
+</div>
+
+<!-- Data Source Info -->
+<div class="bg-gray-50 rounded-xl p-4 text-center text-sm text-gray-500">
+    <i class="fas fa-database mr-2"></i>
+    Data Source: <strong>{% if source == DATA_SOURCE_DB %}Database{% elif source == DATA_SOURCE_SHEETS %}Google Sheets{% else %}Excel File{% endif %}</strong>
+    {% if start_date and end_date %}
+    | Period: <strong>{{ start_date }} to {{ end_date }}</strong>
+    {% elif days %}
+    | Period: <strong>Last {{ days }} days</strong>
+    {% endif %}
 </div>
 {% endblock %}
 
@@ -69,11 +172,18 @@
         '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1'
     ];
     
-    // Daily consumption
+    // Helper function to format dates nicely
+    function formatDate(dateStr) {
+        if (!dateStr || dateStr.length < 10) return dateStr;
+        const date = new Date(dateStr);
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    
+    // Daily consumption chart
     new Chart(document.getElementById('dailyChart'), {
         type: 'line',
         data: {
-            labels: chartData.daily.labels.map(d => d.slice(5)),
+            labels: chartData.daily.labels.map(formatDate),
             datasets: [{
                 label: 'Liters',
                 data: chartData.daily.liters,
@@ -92,11 +202,11 @@
         }
     });
     
-    // Daily amount
+    // Daily amount chart
     new Chart(document.getElementById('amountChart'), {
         type: 'bar',
         data: {
-            labels: chartData.daily.labels.map(d => d.slice(5)),
+            labels: chartData.daily.labels.map(formatDate),
             datasets: [{
                 label: 'Amount',
                 data: chartData.daily.amount,
@@ -121,7 +231,7 @@
         }
     });
     
-    // By department
+    // By department doughnut
     new Chart(document.getElementById('departmentChart'), {
         type: 'doughnut',
         data: {
@@ -139,7 +249,7 @@
         }
     });
     
-    // By fuel type
+    // By fuel type pie
     new Chart(document.getElementById('fuelTypeChart'), {
         type: 'pie',
         data: {
@@ -157,7 +267,7 @@
         }
     });
     
-    // Top vehicles
+    // Top vehicles horizontal bar
     const topVehicles = chartData.top_vehicles;
     new Chart(document.getElementById('vehiclesChart'), {
         type: 'bar',
@@ -184,6 +294,36 @@
                     }
                 }
             }
+        }
+    });
+    
+    // Quick period selection function
+    function setPeriod(days) {
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+        
+        document.getElementById('startDate').value = startDate.toISOString().split('T')[0];
+        document.getElementById('endDate').value = endDate.toISOString().split('T')[0];
+        document.getElementById('daysInput').value = days;
+        
+        // Auto-submit form
+        document.getElementById('analyticsForm').submit();
+    }
+    
+    // Initialize date inputs if empty
+    document.addEventListener('DOMContentLoaded', function() {
+        const startInput = document.getElementById('startDate');
+        const endInput = document.getElementById('endDate');
+        
+        if (!endInput.value) {
+            endInput.value = new Date().toISOString().split('T')[0];
+        }
+        
+        if (!startInput.value) {
+            const start = new Date();
+            start.setDate(start.getDate() - {{ days }});
+            startInput.value = start.toISOString().split('T')[0];
         }
     });
 </script>

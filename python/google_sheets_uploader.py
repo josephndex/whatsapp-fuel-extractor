@@ -130,3 +130,39 @@ class GoogleSheetsUploader:
             return True
         except Exception:
             return False
+
+    def get_all_records(self) -> List[Dict]:
+        """Fetch all records from the worksheet as a list of dictionaries."""
+        try:
+            all_values = self.worksheet.get_all_values()
+            if len(all_values) <= 1:
+                return []  # Only header or empty
+            
+            # First row is header
+            headers = [h.lower() for h in all_values[0]]
+            
+            records = []
+            for row in all_values[1:]:
+                if not any(row):  # Skip empty rows
+                    continue
+                
+                record = {}
+                for idx, header in enumerate(headers):
+                    if idx < len(row):
+                        record[header] = row[idx]
+                    else:
+                        record[header] = ''
+                records.append(record)
+            
+            return records
+        except Exception as e:
+            print(f"Error fetching records from Google Sheets: {e}")
+            return []
+
+    def get_record_count(self) -> int:
+        """Get total number of records (excluding header)."""
+        try:
+            all_values = self.worksheet.get_all_values()
+            return max(0, len(all_values) - 1)
+        except Exception:
+            return 0
