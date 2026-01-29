@@ -30,12 +30,14 @@ services:
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8000
     volumes:
-      - ./data:/app/data
-      - ./google_credentials.json:/app/google_credentials.json:ro
-      - ./config.json:/app/config.json
+      # Only mount data directory for persistence
+      - fuel_data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
+volumes:
+  fuel_data:
