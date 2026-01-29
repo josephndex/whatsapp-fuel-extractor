@@ -78,6 +78,12 @@
                             <span>Fleet</span>
                         </a>
                     </li>
+                    <li class="pt-4 mt-4 border-t border-gray-700">
+                        <a href="/admin" class="flex items-center gap-3 px-4 py-3 text-red-400 hover:bg-red-900 hover:text-red-200 rounded-lg {% if '/admin' in request.url.path %}bg-red-900 text-red-200{% endif %}">
+                            <i class="fas fa-shield-alt w-5"></i>
+                            <span>Admin</span>
+                        </a>
+                    </li>
                 </ul>
             </nav>
             <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-700">

@@ -1,0 +1,21 @@
+[
+  {
+    "timestamp": "2026-01-29 11:02:22",
+    "action": "clear_all_data",
+    "details": "DB: 6, Sheets: 999, JSON: 7, Folders: 5",
+    "result": "success"
+  },
+  {
+    "timestamp": "2026-01-29 11:35:56",
+    "action": "admin_login",
+    "details": "Admin logged in",
+    "result": "success"
+  },
+  {
+    "timestamp": "2026-01-29 12:31:34",
+    "user": "admin",
+    "action": "admin_login",
+    "details": "Failed login attempt for logistics extractor",
+    "result": "failed"
+  }
+]

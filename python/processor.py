@@ -141,18 +141,18 @@ EDIT_APPROVAL_TIMEOUT_MINUTES = 10
 
 # Allowed vehicle registration numbers (normalized: uppercase, no spaces)
 ALLOWED_PLATES = {
-    'KCA542Q', 'KCB711C', 'KCE090R', 'KCE690F', 'KCE699F', 'KCG668W', 'KCH167M',
-    'KCQ215F', 'KCQ581M', 'KCQ618K', 'KCU938R', 'KCU729C', 'KCY076X', 'KCY080X',
-    'KCY084X', 'KCY090X', 'KCY838X', 'KCZ154S', 'KCZ155P', 'KCZ181P', 'KCZ199P',
-    'KCZ223P', 'KCZ476E', 'KCZ751V', 'KDA609E', 'KDA717B', 'KDB323M', 'KDB585E',
-    'KDC207R', 'KDC490Q', 'KDC739F', 'KDD684Y', 'KDD689Y', 'KDE264M', 'KDE638J',
-    'KDK728K', 'KDK732K', 'KDK780K', 'KDK815R', 'KDM306S', 'KDM308S', 'KDM309S',
-    'KDM794R', 'KDM840V', 'KDR592N', 'KDR594N', 'KDS453Y', 'KDS525D', 'KDS919Y',
-    'KDT728R', 'KDT916R', 'KDT923R', 'KMDG902Z', 'KMEL225X', 'KMFF099Z', 'KMFF113Z',
-    'KMFF162Z', 'KMGK596V', 'KMGS239H', 'KCG669W', 'KDP655F', 'KDS949Y', 'KDT724R',
-    'KCK201X', 'KCK686A', 'KCL502T', 'KCN496A', 'KCU237Z', 'KCY930Y', 'KDD655F',
-    'KDN753G', 'KDN759G', 'KDU613B', 'UA234BJ', 'KDT794R', 'KCP337X', 'KDM402L',
-    'KDV064S', 'KDV072L', 'KDV438W', 'KDV439W', 'KDV437W'
+    'KCA542Q', 'KCB711C', 'KCE090R', 'KCE690F', 'KCE699F', 'KCG668W', 'KCG669W',
+    'KCH167M', 'KCK201X', 'KCK686A', 'KCL502T', 'KCN496A', 'KCP337X', 'KCQ215F',
+    'KCQ581M', 'KCQ618K', 'KCU237Z', 'KCU729C', 'KCU938R', 'KCY076X', 'KCY080X',
+    'KCY084X', 'KCY090X', 'KCY838X', 'KCY930Y', 'KCZ154S', 'KCZ155P', 'KCZ181P',
+    'KCZ199P', 'KCZ223P', 'KCZ476E', 'KCZ751V', 'KDA609E', 'KDA717B', 'KDB323M',
+    'KDB585E', 'KDC207R', 'KDC490Q', 'KDC739F', 'KDD655F', 'KDD684Y', 'KDD689Y',
+    'KDE264M', 'KDE638J', 'KDK728K', 'KDK732K', 'KDK780K', 'KDK815R', 'KDM306S',
+    'KDM308S', 'KDM309S', 'KDM402L', 'KDM794R', 'KDM840V', 'KDN753G', 'KDN759G',
+    'KDP655F', 'KDR592N', 'KDR594N', 'KDS453Y', 'KDS525D', 'KDS919Y', 'KDS949Y',
+    'KDT724R', 'KDT728R', 'KDT794R', 'KDT916R', 'KDT923R', 'KDU613B', 'KDV064S',
+    'KDV072L', 'KDV437W', 'KDV438W', 'KDV439W', 'KMDG902Z', 'KMEL225X', 'KMFF099Z',
+    'KMFF113Z', 'KMFF162Z', 'KMGK596V', 'KMGS239H', 'UA234BJ'
 }
 
 
@@ -422,6 +422,129 @@ def check_car_cooldown(car_plate: str, record: Dict) -> Tuple[bool, Optional[str
         logger.error(f"Error checking car cooldown: {e}")
     
     return True, None
+
+
+def check_car_cooldown_with_message(car_plate: str, record: Dict) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Check if the same car is trying to fuel within 12 hours.
+    Returns (can_proceed, approval_id_if_needed, notification_message)
+    
+    This version returns the notification message for direct sending via Evolution API.
+    """
+    last_update = get_car_last_update(car_plate)
+    
+    if not last_update:
+        # First record for this car - no cooldown
+        return True, None, None
+    
+    last_timestamp = last_update.get('timestamp', '')
+    
+    try:
+        last_time = datetime.fromisoformat(last_timestamp)
+        hours_since = (datetime.now() - last_time).total_seconds() / 3600
+        minutes_since = (datetime.now() - last_time).total_seconds() / 60
+        
+        if hours_since < CAR_COOLDOWN_HOURS:
+            hours_remaining = CAR_COOLDOWN_HOURS - hours_since
+            
+            # Get previous and current values for comparison
+            last_driver = last_update.get('driver', 'Unknown')
+            new_driver = record.get('driver', 'Unknown')
+            
+            # Parse odometer values
+            try:
+                last_odo = int(float(str(last_update.get('odometer', 0)).replace(',', '')))
+            except:
+                last_odo = 0
+            try:
+                new_odo = int(float(str(record.get('odometer', 0)).replace(',', '')))
+            except:
+                new_odo = 0
+            
+            distance_traveled = new_odo - last_odo if new_odo > last_odo else 0
+            
+            # Parse liter values
+            try:
+                last_liters = float(str(last_update.get('liters', 0)).replace(',', ''))
+            except:
+                last_liters = 0
+            try:
+                new_liters = float(str(record.get('liters', 0)).replace(',', ''))
+            except:
+                new_liters = 0
+            
+            # Parse amount values
+            try:
+                last_amount = float(str(last_update.get('amount', 0)).replace(',', ''))
+            except:
+                last_amount = 0
+            try:
+                new_amount = float(str(record.get('amount', 0)).replace(',', ''))
+            except:
+                new_amount = 0
+            
+            # Format time interval nicely
+            if hours_since < 1:
+                time_interval = f"{int(minutes_since)} minutes"
+            else:
+                time_interval = f"{hours_since:.1f} hours"
+            
+            reason = f"Same car {car_plate} fueled {time_interval} ago (cooldown: {CAR_COOLDOWN_HOURS}h)"
+            
+            approval_id = save_pending_approval(
+                'car_cooldown',
+                record,
+                last_update,
+                reason
+            )
+            
+            # Build detailed notification message
+            msg = f"[!] *DUPLICATE FUEL REPORT - {car_plate}*\n"
+            msg += f"----------------------------\n\n"
+            
+            msg += f"[TIME] *TIME SINCE LAST FUELING:* {time_interval}\n"
+            msg += f"[WAIT] Cooldown remaining: {hours_remaining:.1f} hours\n\n"
+            
+            msg += f"[DRIVER] *DRIVER COMPARISON*\n"
+            msg += f"- Previous: {last_driver}\n"
+            msg += f"- Current: {new_driver}\n"
+            if last_driver.lower().strip() != new_driver.lower().strip():
+                msg += f"[!] _Driver changed!_\n"
+            msg += "\n"
+            
+            msg += f"[ODO] *ODOMETER / DISTANCE*\n"
+            msg += f"- Previous: {last_odo:,} km\n"
+            msg += f"- Current: {new_odo:,} km\n"
+            if distance_traveled > 0:
+                msg += f"- Distance traveled: *{distance_traveled:,} km*\n"
+            elif new_odo <= last_odo and new_odo > 0:
+                msg += f"[!] _Odometer hasn't increased!_\n"
+            msg += "\n"
+            
+            msg += f"[FUEL] *FUEL COMPARISON*\n"
+            msg += f"- Previous: {last_liters:.1f} L (KSH {last_amount:,.0f})\n"
+            msg += f"- Current: {new_liters:.1f} L (KSH {new_amount:,.0f})\n"
+            
+            # Calculate efficiency if we have distance
+            if distance_traveled > 0 and last_liters > 0:
+                efficiency = distance_traveled / last_liters
+                msg += f"- Efficiency since last: {efficiency:.1f} km/L\n"
+            msg += "\n"
+            
+            msg += f"----------------------------\n"
+            msg += f"[ID] Approval ID: *{approval_id}*\n\n"
+            msg += f"[OK] *!approve {approval_id}* - Log as new record\n"
+            msg += f"[X] *!reject {approval_id}* - Discard"
+            
+            # Also save to validation_errors for tracking (but notification is sent immediately)
+            save_validation_error(car_plate, record.get('driver', ''), msg, record.get('sender_phone', ''), is_approval_request=True)
+            
+            return False, approval_id, msg
+            
+    except Exception as e:
+        logger.error(f"Error checking car cooldown: {e}")
+    
+    return True, None, None
 
 
 # Normalize plate by removing spaces and uppercasing

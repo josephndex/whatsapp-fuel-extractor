@@ -96,10 +96,13 @@ if sys.platform == 'win32':
     except:
         pass  # Already wrapped or not a TTY
 
-from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi import FastAPI, Request, Form, HTTPException, Response, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import hashlib
+import secrets
+import re as regex_module
 
 # Try imports for data access
 try:
@@ -113,15 +116,27 @@ try:
     from .env import load_env, get_env
     from .db import Database
     from .google_sheets_uploader import GoogleSheetsUploader
+    from .evolution_api import EvolutionAPI, get_evolution_client
+    from .webhook_receiver import router as webhook_router
 except ImportError:
-    from env import load_env, get_env
-    from db import Database
-    from google_sheets_uploader import GoogleSheetsUploader
+    from python.env import load_env, get_env
+    from python.db import Database
+    from python.google_sheets_uploader import GoogleSheetsUploader
+    from python.evolution_api import EvolutionAPI, get_evolution_client
+    from python.webhook_receiver import router as webhook_router
 
 # Data source constants
 DATA_SOURCE_EXCEL = 'excel'
 DATA_SOURCE_DB = 'database'
 DATA_SOURCE_SHEETS = 'sheets'
+
+# Admin passwords
+ADMIN_PASSWORD = "Nala2025"
+AUDIT_LOG_PASSWORD = "NDERITU101"
+
+# Session management
+ADMIN_SESSIONS = {}  # token -> expiry timestamp
+SESSION_DURATION_HOURS = 24
 
 # Paths
 ROOT_DIR = Path(__file__).parent.parent
@@ -129,6 +144,7 @@ DATA_DIR = ROOT_DIR / 'data'
 CONFIG_PATH = ROOT_DIR / 'config.json'
 TEMPLATES_DIR = Path(__file__).parent / 'templates'
 STATIC_DIR = Path(__file__).parent / 'static'
+AUDIT_LOG_PATH = DATA_DIR / 'audit_log.json'
 
 # Load environment
 load_env(str(ROOT_DIR / '.env'))
@@ -185,6 +201,20 @@ async def startup_event():
     for dir_path in [DATA_DIR, DATA_DIR / 'raw_messages', DATA_DIR / 'processed', DATA_DIR / 'errors', DATA_DIR / 'output']:
         dir_path.mkdir(parents=True, exist_ok=True)
     print("[OK] Data directories verified")
+    
+    # Initialize Evolution API connection
+    try:
+        api = get_evolution_client()
+        if api:
+            health = api.health_check()  # Sync method
+            if health:
+                print(f"[OK] Evolution API connected: {api.base_url}")
+            else:
+                print("[WARN] Evolution API not responding")
+        else:
+            print("[WARN] Evolution API not configured")
+    except Exception as e:
+        print(f"[WARN] Evolution API check failed: {e}")
 
 
 @app.on_event("shutdown")
@@ -195,6 +225,9 @@ async def shutdown_event():
 # Mount static files
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Mount Evolution API webhook router
+app.include_router(webhook_router)
 
 # Templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -372,13 +405,23 @@ def load_records_from_sheets(start_date: Optional[datetime] = None, end_date: Op
     
     try:
         config = load_config()
-        spreadsheet_id = config.get('google_sheets', {}).get('spreadsheetId') or get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
-        worksheet_name = config.get('google_sheets', {}).get('worksheetName', 'FUEL RECORDS')
+        # Check both config paths for backwards compatibility
+        spreadsheet_id = (
+            config.get('upload', {}).get('google', {}).get('spreadsheetId') or
+            config.get('google_sheets', {}).get('spreadsheetId') or
+            get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
+        )
+        worksheet_name = (
+            config.get('upload', {}).get('google', {}).get('sheetName') or
+            config.get('google_sheets', {}).get('worksheetName') or
+            'SYSTEM FUEL TRACKER'
+        )
         
         if not spreadsheet_id:
             print("Google Sheets not configured (no spreadsheet ID)")
             return records
         
+        print(f"[SHEETS] Loading from worksheet: {worksheet_name}")
         uploader = GoogleSheetsUploader(spreadsheet_id=spreadsheet_id, worksheet_name=worksheet_name)
         raw_records = uploader.get_all_records()
         
@@ -472,25 +515,16 @@ def load_records_by_source(source: str = DATA_SOURCE_EXCEL, start_date: Optional
 
 
 def load_records_with_fallback(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> Tuple[List[Dict], str]:
-    """Load records with automatic fallback: Sheets -> Database -> Excel.
+    """Load records with automatic fallback: Database -> Sheets -> Excel.
     
     Priority order:
-    1. Google Sheets (primary)
-    2. Database (fallback)
+    1. Database (primary - most reliable)
+    2. Google Sheets (backup)
     3. Excel file (last resort)
     
     Returns: (records, source_used)
     """
-    # Try Google Sheets first
-    try:
-        records = load_records_from_sheets(start_date=start_date, end_date=end_date)
-        if records:
-            print(f"[DATA] Loaded {len(records)} records from Google Sheets")
-            return records, DATA_SOURCE_SHEETS
-    except Exception as e:
-        print(f"[WARN] Google Sheets failed: {e}")
-    
-    # Try Database second
+    # Try Database first (primary source)
     try:
         records = load_records_from_db(start_date=start_date, end_date=end_date)
         if records:
@@ -498,6 +532,15 @@ def load_records_with_fallback(start_date: Optional[datetime] = None, end_date: 
             return records, DATA_SOURCE_DB
     except Exception as e:
         print(f"[WARN] Database failed: {e}")
+    
+    # Try Google Sheets second
+    try:
+        records = load_records_from_sheets(start_date=start_date, end_date=end_date)
+        if records:
+            print(f"[DATA] Loaded {len(records)} records from Google Sheets")
+            return records, DATA_SOURCE_SHEETS
+    except Exception as e:
+        print(f"[WARN] Google Sheets failed: {e}")
     
     # Fall back to Excel
     try:
@@ -714,7 +757,7 @@ def get_chart_data(records: List[Dict], days: int = 7) -> Dict:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Main dashboard page"""
-    records = load_records()
+    records, source = load_records_with_fallback()
     stats = get_stats(records)
     chart_data = get_chart_data(records, days=7)
     
@@ -723,13 +766,14 @@ async def dashboard(request: Request):
         "stats": stats,
         "chart_data": json.dumps(chart_data),
         "recent_records": records[:10],
+        "data_source": source,
     })
 
 
 @app.get("/records", response_class=HTMLResponse)
 async def records_page(request: Request, search: str = "", page: int = 1):
     """Records listing page"""
-    records = load_records()
+    records, source = load_records_with_fallback()
     
     # Filter by search
     if search:
@@ -752,6 +796,7 @@ async def records_page(request: Request, search: str = "", page: int = 1):
         "page": page,
         "total_pages": total_pages,
         "search": search,
+        "data_source": source,
     })
 
 
@@ -768,7 +813,7 @@ async def approvals_page(request: Request):
 
 @app.post("/approvals/{approval_id}/approve")
 async def approve_record(approval_id: str):
-    """Approve a pending record with safe file operations"""
+    """Approve a pending record - save to DB/Sheets and send WhatsApp notification"""
     path = DATA_DIR / 'pending_approvals.json'
     
     approvals = safe_json_load(path, [])
@@ -787,39 +832,134 @@ async def approve_record(approval_id: str):
             if not safe_json_save(path, approvals):
                 raise HTTPException(status_code=500, detail="Failed to save approval")
             
-            # Create raw message file for processor (like Node.js does)
+            # Get the record and save it directly
             record = approval.get('record', {})
             if record and approval.get('type') in ['car_cooldown', 'driver_change', 'edit']:
-                raw_messages_dir = DATA_DIR / 'raw_messages'
-                raw_messages_dir.mkdir(exist_ok=True)
+                # Load config for storage settings
+                try:
+                    with open(CONFIG_PATH, 'r') as f:
+                        config = json.load(f)
+                except:
+                    config = {}
                 
-                raw_msg_file = raw_messages_dir / f"msg_approved_{approval_id}_{int(datetime.now().timestamp() * 1000)}.json"
+                upload_config = config.get('upload', {})
+                saved_destinations = []
                 
-                msg_data = {
-                    'id': f'approved_{approval_id}',
-                    'timestamp': int(datetime.now().timestamp()),
-                    'datetime': datetime.now().isoformat(),
-                    'groupName': 'Approved',
-                    'groupId': '',
-                    'senderPhone': '',
-                    'senderName': record.get('sender', 'Web Approved'),
-                    'body': f"FUEL UPDATE\nDEPARTMENT: {record.get('department', '')}\nDRIVER: {record.get('driver', '')}\nCAR: {record.get('car', '')}\nLITERS: {record.get('liters', '')}\nAMOUNT: {record.get('amount', '')}\nTYPE: {record.get('type', '')}\nODOMETER: {record.get('odometer', '')}",
-                    'capturedAt': datetime.now().isoformat(),
-                    'isApproved': True,
-                    'approvalType': approval.get('type'),
-                    'originalApprovalId': approval_id
-                }
+                # Save to MySQL database
+                if upload_config.get('toDatabase', True):
+                    try:
+                        table_name = upload_config.get('database', {}).get('tableName', 'fuel_records')
+                        db = Database(table_name=table_name)
+                        if db.insert_fuel_record(record):
+                            saved_destinations.append("Database")
+                            print(f"[DB] Inserted approved record for {record.get('car', 'N/A')}")
+                    except Exception as e:
+                        print(f"[DB] Error saving to database: {e}")
                 
-                safe_json_save(raw_msg_file, msg_data)
+                # Save to Google Sheets
+                if upload_config.get('toGoogleSheets', True):
+                    try:
+                        sheet_config = upload_config.get('google', {})
+                        spreadsheet_id = sheet_config.get('spreadsheetId') or get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
+                        sheet_name = sheet_config.get('sheetName', 'FUEL RECORDS')
+                        
+                        if spreadsheet_id:
+                            uploader = GoogleSheetsUploader(
+                                spreadsheet_id=spreadsheet_id,
+                                worksheet_name=sheet_name
+                            )
+                            columns = ['DATETIME', 'DEPARTMENT', 'DRIVER', 'CAR', 'LITERS', 'AMOUNT', 'TYPE', 'ODOMETER', 'SENDER', 'RAW_MESSAGE']
+                            uploader.ensure_headers(columns)
+                            uploader.append_record(record, columns)
+                            saved_destinations.append("Google Sheets")
+                            print(f"[SHEETS] Uploaded approved record for {record.get('car', 'N/A')}")
+                    except Exception as e:
+                        print(f"[SHEETS] Error saving to Google Sheets: {e}")
+                
+                # Update car_last_update for cooldown tracking
+                try:
+                    car_last_update_path = DATA_DIR / 'car_last_update.json'
+                    updates = safe_json_load(car_last_update_path, {})
+                    car_plate = record.get('car', '')
+                    if car_plate:
+                        updates[car_plate] = {
+                            'timestamp': datetime.now().isoformat(),
+                            'driver': record.get('driver', ''),
+                            'liters': record.get('liters', ''),
+                            'amount': record.get('amount', ''),
+                            'odometer': record.get('odometer', ''),
+                            'department': record.get('department', '')
+                        }
+                        safe_json_save(car_last_update_path, updates)
+                        print(f"[COOLDOWN] Updated car_last_update for {car_plate}")
+                except Exception as e:
+                    print(f"[COOLDOWN] Error updating car_last_update: {e}")
+                
+                # Send WhatsApp confirmation via Evolution API
+                try:
+                    # Build confirmation message
+                    confirm_msg = "[APPROVED] *FUEL REPORT APPROVED*\n\n"
+                    
+                    if record.get('department'):
+                        confirm_msg += f"Department: {record['department']}\n"
+                    if record.get('driver'):
+                        confirm_msg += f"Driver: {record['driver']}\n"
+                    if record.get('car'):
+                        confirm_msg += f"Vehicle: {record['car']}\n"
+                    if record.get('liters'):
+                        try:
+                            liters = float(str(record['liters']).replace(',', ''))
+                            confirm_msg += f"Fuel: {liters:.2f} L"
+                        except:
+                            confirm_msg += f"Fuel: {record['liters']} L"
+                        if record.get('type'):
+                            confirm_msg += f" ({record['type']})"
+                        confirm_msg += "\n"
+                    if record.get('amount'):
+                        try:
+                            amount = float(str(record['amount']).replace(',', ''))
+                            confirm_msg += f"Amount: KSH {amount:,.0f}\n"
+                        except:
+                            confirm_msg += f"Amount: KSH {record['amount']}\n"
+                    if record.get('odometer'):
+                        try:
+                            odo = int(float(str(record['odometer']).replace(',', '')))
+                            confirm_msg += f"Odometer: {odo:,} km\n"
+                        except:
+                            confirm_msg += f"Odometer: {record['odometer']} km\n"
+                    
+                    confirm_msg += f"\nSaved to: {', '.join(saved_destinations) if saved_destinations else 'Local'}\n"
+                    confirm_msg += f"\n_Approved via Web Dashboard | {datetime.now().strftime('%Y-%m-%d %H:%M')}_"
+                    
+                    # Get group JID from config
+                    group_jid = config.get('whatsapp', {}).get('groupJid', '')
+                    
+                    if group_jid:
+                        api = EvolutionAPI()
+                        result = await api.send_text_message_async(group_jid, confirm_msg)
+                        if 'error' not in result:
+                            print(f"[WHATSAPP] Sent approval confirmation for {record.get('car', 'N/A')}")
+                        else:
+                            print(f"[WHATSAPP] Failed to send confirmation: {result}")
+                    else:
+                        print(f"[WHATSAPP] No group JID configured - confirmation not sent")
+                except Exception as e:
+                    print(f"[WHATSAPP] Error sending confirmation: {e}")
+                
+                print(f"[APPROVED] Record saved - Destinations: {saved_destinations}")
             
-            return JSONResponse({"status": "approved", "id": approval_id})
+            return JSONResponse({
+                "status": "approved", 
+                "id": approval_id,
+                "saved_to": saved_destinations if 'saved_destinations' in locals() else []
+            })
     
     raise HTTPException(status_code=404, detail="Approval not found")
 
 
 @app.post("/approvals/{approval_id}/reject")
 async def reject_record(approval_id: str):
-    """Reject a pending record with safe file operations"""
+    """Reject a pending record and send WhatsApp notification"""
     path = DATA_DIR / 'pending_approvals.json'
     
     approvals = safe_json_load(path, [])
@@ -838,25 +978,37 @@ async def reject_record(approval_id: str):
             if not safe_json_save(path, approvals):
                 raise HTTPException(status_code=500, detail="Failed to save rejection")
             
-            # Send rejection notification to WhatsApp
+            # Send rejection notification directly via Evolution API
             record = approval.get('record', {})
             if record:
-                confirmations_path = DATA_DIR / 'confirmations.json'
-                confirmations = safe_json_load(confirmations_path, [])
-                
                 reject_msg = f"[REJECTED] *FUEL REPORT REJECTED*\n\n"
                 reject_msg += f"Vehicle: {record.get('car', 'N/A')}\n"
                 reject_msg += f"Driver: {record.get('driver', 'N/A')}\n"
                 reject_msg += f"Reason: {approval.get('reason', 'Admin rejected via web')}\n"
-                reject_msg += f"\n_Rejected via Web Dashboard_"
+                reject_msg += f"\n_Rejected via Web Dashboard | {datetime.now().strftime('%Y-%m-%d %H:%M')}_"
                 
-                confirmations.append({
-                    'timestamp': datetime.now().isoformat(),
-                    'message': reject_msg,
-                    'notified': False
-                })
-                
-                safe_json_save(confirmations_path, confirmations)
+                # Send via Evolution API
+                try:
+                    # Load config for group JID
+                    try:
+                        with open(CONFIG_PATH, 'r') as f:
+                            config = json.load(f)
+                    except:
+                        config = {}
+                    
+                    group_jid = config.get('whatsapp', {}).get('groupJid', '')
+                    
+                    if group_jid:
+                        api = EvolutionAPI()
+                        result = await api.send_text_message_async(group_jid, reject_msg)
+                        if 'error' not in result:
+                            print(f"[WHATSAPP] Sent rejection notification for {record.get('car', 'N/A')}")
+                        else:
+                            print(f"[WHATSAPP] Failed to send rejection: {result}")
+                    else:
+                        print(f"[WHATSAPP] No group JID configured - rejection notification not sent")
+                except Exception as e:
+                    print(f"[WHATSAPP] Error sending rejection notification: {e}")
             
             return JSONResponse({"status": "rejected", "id": approval_id})
     
@@ -1038,6 +1190,22 @@ async def health_check():
     approvals = load_pending_approvals()
     health['checks']['pending_approvals'] = len(approvals)
     
+    # Check Evolution API
+    try:
+        api = get_evolution_client()
+        if api:
+            evo_health = api.health_check()  # Sync method, don't await
+            health['checks']['evolution_api'] = {
+                'connected': evo_health is not None,
+                'url': api.base_url
+            }
+            if evo_health:
+                health['checks']['evolution_api']['version'] = evo_health.get('version', 'unknown')
+        else:
+            health['checks']['evolution_api'] = {'connected': False, 'error': 'Not configured'}
+    except Exception as e:
+        health['checks']['evolution_api'] = {'connected': False, 'error': str(e)}
+    
     # Overall status
     if not excel_path.exists():
         health['status'] = 'degraded'
@@ -1045,8 +1213,133 @@ async def health_check():
     elif health['checks'].get('raw_messages', {}).get('file_count', 0) > 100:
         health['status'] = 'warning'
         health['message'] = 'Large queue of unprocessed messages'
+    elif not health['checks'].get('evolution_api', {}).get('connected'):
+        health['status'] = 'warning'
+        health['message'] = 'Evolution API not connected'
     
     return health
+
+
+@app.get("/api/evolution/status")
+async def evolution_api_status():
+    """Get detailed Evolution API status"""
+    try:
+        api = get_evolution_client()
+        if not api:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    'status': 'not_configured',
+                    'error': 'Evolution API not configured',
+                    'help': 'Set EVOLUTION_API_URL and EVOLUTION_API_KEY environment variables'
+                }
+            )
+        
+        # Get health check
+        health = api.health_check()  # Sync method
+        if not health:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    'status': 'unreachable',
+                    'url': api.base_url,
+                    'error': 'Evolution API not responding'
+                }
+            )
+        
+        # Get instance status
+        instance = api.get_instance_status()  # Sync method
+        
+        return {
+            'status': 'connected',
+            'url': api.base_url,
+            'version': health.get('version', 'unknown'),
+            'instance': instance,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                'status': 'error',
+                'error': str(e)
+            }
+        )
+
+
+@app.post("/api/evolution/send")
+async def evolution_send_message(
+    to: str = Form(...),
+    message: str = Form(...)
+):
+    """Send a WhatsApp message via Evolution API"""
+    try:
+        api = get_evolution_client()
+        if not api:
+            raise HTTPException(status_code=503, detail="Evolution API not configured")
+        
+        # Send message
+        result = api.send_text(to, message)  # Sync method
+        
+        if result:
+            return {'status': 'sent', 'to': to, 'result': result}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to send message")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/evolution/initialize")
+async def evolution_initialize():
+    """Initialize/create Evolution API instance and configure webhook"""
+    try:
+        api = get_evolution_client()
+        if not api:
+            raise HTTPException(status_code=503, detail="Evolution API not configured")
+        
+        # Get webhook URL from config or environment
+        config = load_config()
+        webhook_url = config.get('evolution', {}).get('webhookUrl') or get_env('EVOLUTION_WEBHOOK_URL')
+        
+        if not webhook_url:
+            # Auto-generate webhook URL
+            host = get_env('WEB_HOST', 'localhost')
+            port = get_env('WEB_PORT', '8000')
+            webhook_url = f"http://{host}:{port}/webhook/evolution"
+        
+        # Create instance if not exists
+        instance_status = api.get_instance_status()  # Sync method
+        
+        if not instance_status or instance_status.get('state') != 'open':
+            # Create new instance
+            result = api.create_instance(webhook_url=webhook_url)  # Sync method
+            if not result:
+                raise HTTPException(status_code=500, detail="Failed to create instance")
+        
+        # Configure webhook if URL provided
+        if webhook_url:
+            webhook_result = api.set_webhook(  # Sync method
+                webhook_url=webhook_url,
+                events=['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED']
+            )
+        
+        # Get current status
+        status = api.get_instance_status()  # Sync method
+        
+        return {
+            'status': 'initialized',
+            'instance': status,
+            'webhook_url': webhook_url
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/backup")
@@ -1155,6 +1448,655 @@ async def cleanup_old_data():
             cleanup_results['cleaned'].append({'file': 'pending_approvals.json', 'entries_removed': removed})
     
     return cleanup_results
+
+
+@app.post("/api/sync")
+async def sync_data_sources():
+    """
+    Synchronize records between Database and Google Sheets.
+    
+    - Records in DB but not in Sheets → Add to Sheets
+    - Records in Sheets but not in DB → Add to DB
+    
+    Uses (datetime, car, odometer) as unique identifier for each record.
+    """
+    sync_results = {
+        'timestamp': datetime.now().isoformat(),
+        'db_to_sheets': 0,
+        'sheets_to_db': 0,
+        'errors': [],
+        'status': 'success'
+    }
+    
+    try:
+        # Load config
+        config = load_config()
+        spreadsheet_id = (
+            config.get('upload', {}).get('google', {}).get('spreadsheetId') or
+            get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
+        )
+        worksheet_name = (
+            config.get('upload', {}).get('google', {}).get('sheetName') or
+            'SYSTEM FUEL TRACKER'
+        )
+        
+        if not spreadsheet_id:
+            sync_results['status'] = 'error'
+            sync_results['errors'].append('Google Sheets not configured')
+            return sync_results
+        
+        # Load records from both sources
+        db_records = load_records_from_db()
+        sheets_records = load_records_from_sheets()
+        
+        print(f"[SYNC] DB has {len(db_records)} records, Sheets has {len(sheets_records)} records")
+        
+        # Create unique keys for comparison: (datetime, car, odometer)
+        def make_key(r):
+            dt = r.get('datetime', '')[:16] if r.get('datetime') else ''  # Truncate to minute
+            car = str(r.get('car', '')).upper().replace(' ', '')
+            odo = str(r.get('odometer', '0'))
+            return f"{dt}|{car}|{odo}"
+        
+        db_keys = {make_key(r): r for r in db_records}
+        sheets_keys = {make_key(r): r for r in sheets_records}
+        
+        # Find records in DB but not in Sheets → Add to Sheets
+        db_only = [r for k, r in db_keys.items() if k not in sheets_keys]
+        if db_only:
+            print(f"[SYNC] Found {len(db_only)} records in DB not in Sheets")
+            try:
+                uploader = GoogleSheetsUploader(spreadsheet_id=spreadsheet_id, worksheet_name=worksheet_name)
+                columns = ['DATETIME', 'DEPARTMENT', 'DRIVER', 'CAR', 'LITERS', 'AMOUNT', 'TYPE', 'ODOMETER', 'SENDER', 'RAW_MESSAGE']
+                uploader.ensure_headers(columns)
+                
+                for record in db_only:
+                    try:
+                        uploader.append_record(record, columns)
+                        sync_results['db_to_sheets'] += 1
+                    except Exception as e:
+                        sync_results['errors'].append(f"Failed to add record to Sheets: {e}")
+                print(f"[SYNC] Added {sync_results['db_to_sheets']} records to Sheets")
+            except Exception as e:
+                sync_results['errors'].append(f"Sheets connection error: {e}")
+        
+        # Find records in Sheets but not in DB → Add to DB
+        sheets_only = [r for k, r in sheets_keys.items() if k not in db_keys]
+        if sheets_only:
+            print(f"[SYNC] Found {len(sheets_only)} records in Sheets not in DB")
+            try:
+                db = Database()
+                for record in sheets_only:
+                    try:
+                        # Format record for DB
+                        db_record = {
+                            'datetime': record.get('datetime', ''),
+                            'department': record.get('department', ''),
+                            'driver': record.get('driver', ''),
+                            'car': record.get('car', ''),
+                            'liters': record.get('liters', 0),
+                            'amount': record.get('amount', 0),
+                            'type': record.get('type', ''),
+                            'odometer': record.get('odometer', 0),
+                            'sender': record.get('sender', ''),
+                            'raw_message': record.get('raw_message', ''),
+                        }
+                        if db.insert_fuel_record(db_record):
+                            sync_results['sheets_to_db'] += 1
+                    except Exception as e:
+                        sync_results['errors'].append(f"Failed to add record to DB: {e}")
+                print(f"[SYNC] Added {sync_results['sheets_to_db']} records to DB")
+            except Exception as e:
+                sync_results['errors'].append(f"DB connection error: {e}")
+        
+        if sync_results['errors']:
+            sync_results['status'] = 'partial'
+        
+        print(f"[SYNC] Complete: DB→Sheets: {sync_results['db_to_sheets']}, Sheets→DB: {sync_results['sheets_to_db']}")
+        
+    except Exception as e:
+        sync_results['status'] = 'error'
+        sync_results['errors'].append(str(e))
+        print(f"[SYNC] Error: {e}")
+    
+    return sync_results
+
+
+# ============================================================================
+# ADMIN PANEL ROUTES
+# ============================================================================
+
+def create_admin_session() -> str:
+    """Create a new admin session token"""
+    token = secrets.token_urlsafe(32)
+    expiry = datetime.now() + timedelta(hours=SESSION_DURATION_HOURS)
+    ADMIN_SESSIONS[token] = expiry
+    return token
+
+
+def verify_admin_session(token: Optional[str]) -> bool:
+    """Verify if admin session is valid"""
+    if not token or token not in ADMIN_SESSIONS:
+        return False
+    expiry = ADMIN_SESSIONS.get(token)
+    if expiry and datetime.now() < expiry:
+        return True
+    # Remove expired session
+    ADMIN_SESSIONS.pop(token, None)
+    return False
+
+
+def log_admin_action(action: str, details: str = '', result: str = 'success'):
+    """Log an admin action to the audit log"""
+    log_entry = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'action': action,
+        'details': details,
+        'result': result
+    }
+    
+    logs = safe_json_load(AUDIT_LOG_PATH, [])
+    if not isinstance(logs, list):
+        logs = []
+    
+    logs.append(log_entry)
+    
+    # Keep only last 500 entries
+    if len(logs) > 500:
+        logs = logs[-500:]
+    
+    safe_json_save(AUDIT_LOG_PATH, logs)
+    print(f"[AUDIT] {action}: {details} - {result}")
+
+
+def save_fleet_to_processor(plates: set) -> bool:
+    """Save updated fleet to processor.py"""
+    processor_path = Path(__file__).parent / 'processor.py'
+    
+    if not processor_path.exists():
+        return False
+    
+    try:
+        with open(processor_path, 'r') as f:
+            content = f.read()
+        
+        # Build new ALLOWED_PLATES set
+        sorted_plates = sorted(plates)
+        plates_per_line = 7
+        lines = []
+        for i in range(0, len(sorted_plates), plates_per_line):
+            batch = sorted_plates[i:i+plates_per_line]
+            lines.append("    " + ", ".join(f"'{p}'" for p in batch))
+        
+        new_plates_str = "ALLOWED_PLATES = {\n" + ",\n".join(lines) + "\n}"
+        
+        # Replace the existing ALLOWED_PLATES
+        pattern = r"ALLOWED_PLATES\s*=\s*\{[^}]+\}"
+        new_content = regex_module.sub(pattern, new_plates_str, content, count=1)
+        
+        with open(processor_path, 'w') as f:
+            f.write(new_content)
+        
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to save fleet: {e}")
+        return False
+
+
+@app.get("/admin/login", response_class=HTMLResponse)
+async def admin_login_page(request: Request, error: str = None):
+    """Admin login page"""
+    return templates.TemplateResponse("admin_login.html", {
+        "request": request,
+        "error": error
+    })
+
+
+@app.post("/admin/login")
+async def admin_login(request: Request, password: str = Form(...)):
+    """Process admin login"""
+    if password == ADMIN_PASSWORD:
+        token = create_admin_session()
+        log_admin_action('admin_login', 'Admin logged in', 'success')
+        response = RedirectResponse(url="/admin", status_code=303)
+        response.set_cookie(
+            key="admin_session",
+            value=token,
+            max_age=SESSION_DURATION_HOURS * 3600,
+            httponly=True,
+            samesite="lax"
+        )
+        return response
+    
+    log_admin_action('admin_login', 'Failed login attempt', 'failed')
+    return templates.TemplateResponse("admin_login.html", {
+        "request": request,
+        "error": "Invalid password"
+    })
+
+
+@app.post("/admin/logout")
+async def admin_logout(request: Request):
+    """Process admin logout"""
+    token = request.cookies.get("admin_session")
+    if token:
+        ADMIN_SESSIONS.pop(token, None)
+    log_admin_action('admin_logout', 'Admin logged out', 'success')
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie("admin_session")
+    return response
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    """Admin panel page"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        return RedirectResponse(url="/admin/login", status_code=303)
+    
+    # Get system stats
+    config = load_config()
+    fleet = load_fleet()
+    
+    # Count records from both sources
+    db_records = []
+    sheets_records = []
+    evolution_connected = False
+    
+    try:
+        db_records = load_records_from_db()
+    except:
+        pass
+    
+    try:
+        sheets_records = load_records_from_sheets()
+    except:
+        pass
+    
+    try:
+        api = get_evolution_client()
+        if api:
+            health = api.health_check()
+            evolution_connected = bool(health)
+    except:
+        pass
+    
+    pending = load_pending_approvals()
+    
+    stats = {
+        'db_records': len(db_records),
+        'sheets_records': len(sheets_records),
+        'pending_approvals': len(pending),
+        'evolution_connected': evolution_connected
+    }
+    
+    config_info = {
+        'group_jid': config.get('whatsapp', {}).get('groupJid', 'Not set'),
+        'cooldown_hours': 12,  # From processor.py
+        'webhook_url': config.get('evolution', {}).get('webhookUrl', 'Not set'),
+        'upload_db': config.get('upload', {}).get('toDatabase', False),
+        'upload_sheets': config.get('upload', {}).get('toGoogleSheets', False)
+    }
+    
+    return templates.TemplateResponse("admin.html", {
+        "request": request,
+        "stats": stats,
+        "config": config_info,
+        "fleet": fleet,
+        "fleet_count": len(fleet)
+    })
+
+
+@app.get("/api/admin/export")
+async def admin_export_backup(request: Request):
+    """Export all data as JSON backup"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    backup = {
+        'exported_at': datetime.now().isoformat(),
+        'db_records': [],
+        'sheets_records': [],
+        'pending_approvals': [],
+        'fleet': []
+    }
+    
+    try:
+        backup['db_records'] = [
+            {k: v for k, v in r.items() if k != 'datetime_obj'}
+            for r in load_records_from_db()
+        ]
+    except Exception as e:
+        backup['db_error'] = str(e)
+    
+    try:
+        backup['sheets_records'] = [
+            {k: v for k, v in r.items() if k != 'datetime_obj'}
+            for r in load_records_from_sheets()
+        ]
+    except Exception as e:
+        backup['sheets_error'] = str(e)
+    
+    backup['pending_approvals'] = load_pending_approvals()
+    backup['fleet'] = load_fleet()
+    
+    log_admin_action('export_backup', f"Exported {len(backup['db_records'])} DB records, {len(backup['sheets_records'])} Sheets records")
+    
+    return Response(
+        content=json.dumps(backup, indent=2, default=str),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f"attachment; filename=fuel_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        }
+    )
+
+
+@app.post("/api/admin/clear-all")
+async def admin_clear_all(request: Request):
+    """Clear ALL data - DB, Sheets, and all local JSON/cache files. Fresh start!"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    results = {
+        'db_cleared': False, 
+        'sheets_cleared': False, 
+        'json_files_cleared': 0,
+        'cache_folders_cleared': 0,
+        'errors': []
+    }
+    
+    # 1. Clear Database
+    try:
+        db = Database()
+        if db.engine:
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                result = conn.execute(text("SELECT COUNT(*) FROM fuel_records"))
+                db_count = result.scalar()
+                conn.execute(text("DELETE FROM fuel_records"))
+                conn.commit()
+            results['db_cleared'] = True
+            results['db_records_deleted'] = db_count
+            print(f"[ADMIN] Cleared {db_count} records from database")
+    except Exception as e:
+        results['errors'].append(f"DB: {e}")
+    
+    # 2. Clear Google Sheets
+    try:
+        config = load_config()
+        spreadsheet_id = config.get('upload', {}).get('google', {}).get('spreadsheetId') or get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
+        worksheet_name = config.get('upload', {}).get('google', {}).get('sheetName') or 'SYSTEM FUEL TRACKER'
+        
+        if spreadsheet_id:
+            uploader = GoogleSheetsUploader(spreadsheet_id=spreadsheet_id, worksheet_name=worksheet_name)
+            worksheet = uploader.worksheet
+            sheets_count = max(0, worksheet.row_count - 1)
+            if worksheet.row_count > 1:
+                worksheet.delete_rows(2, worksheet.row_count)
+            results['sheets_cleared'] = True
+            results['sheets_records_deleted'] = sheets_count
+            print(f"[ADMIN] Cleared {sheets_count} records from Google Sheets")
+    except Exception as e:
+        results['errors'].append(f"Sheets: {e}")
+    
+    # 3. Clear all JSON data files in data/ folder
+    json_files_to_clear = [
+        'car_last_update.json',
+        'car_summary.json', 
+        'driver_history.json',
+        'last_processed.json',
+        'pending_approvals.json',
+        'validation_errors.json',
+        'audit_log.json',
+    ]
+    
+    for json_file in json_files_to_clear:
+        file_path = DATA_DIR / json_file
+        try:
+            if file_path.exists():
+                # Reset to empty state
+                if json_file in ['car_last_update.json', 'car_summary.json', 'driver_history.json']:
+                    safe_json_save(file_path, {})
+                else:
+                    safe_json_save(file_path, [])
+                results['json_files_cleared'] += 1
+                print(f"[ADMIN] Cleared {json_file}")
+        except Exception as e:
+            results['errors'].append(f"{json_file}: {e}")
+    
+    # 4. Clear all cache folders (processed, raw_messages, errors, backups, output)
+    cache_folders = ['processed', 'raw_messages', 'errors', 'backups', 'output']
+    
+    for folder_name in cache_folders:
+        folder_path = DATA_DIR / folder_name
+        try:
+            if folder_path.exists():
+                files_removed = 0
+                for f in folder_path.glob('*'):
+                    if f.is_file():
+                        try:
+                            f.unlink()
+                            files_removed += 1
+                        except:
+                            pass
+                if files_removed > 0:
+                    results['cache_folders_cleared'] += 1
+                    print(f"[ADMIN] Cleared {files_removed} files from {folder_name}/")
+        except Exception as e:
+            results['errors'].append(f"{folder_name}/: {e}")
+    
+    # Log the action (this creates a new audit log entry in the now-empty log)
+    summary = f"DB: {results.get('db_records_deleted', 0)}, Sheets: {results.get('sheets_records_deleted', 0)}, JSON: {results['json_files_cleared']}, Folders: {results['cache_folders_cleared']}"
+    log_admin_action('clear_all_data', summary, 'success' if not results['errors'] else 'partial')
+    
+    return {
+        'status': 'success' if not results['errors'] else 'partial',
+        'message': f"🧹 FULL RESET COMPLETE!\n• Database: {results.get('db_records_deleted', 0)} records deleted\n• Sheets: {results.get('sheets_records_deleted', 0)} records deleted\n• JSON files reset: {results['json_files_cleared']}\n• Cache folders cleared: {results['cache_folders_cleared']}",
+        **results
+    }
+
+
+@app.post("/api/admin/clear-db")
+async def admin_clear_db(request: Request):
+    """Clear all data from Database only"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    try:
+        db = Database()
+        if db.engine:
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                result = conn.execute(text("SELECT COUNT(*) FROM fuel_records"))
+                count = result.scalar()
+                conn.execute(text("DELETE FROM fuel_records"))
+                conn.commit()
+            
+            log_admin_action('clear_db', f"Deleted {count} records from database")
+            return {'status': 'success', 'message': f'Deleted {count} records from database'}
+    except Exception as e:
+        log_admin_action('clear_db', str(e), 'failed')
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.post("/api/admin/clear-sheets")
+async def admin_clear_sheets(request: Request):
+    """Clear all data from Google Sheets only"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    try:
+        config = load_config()
+        spreadsheet_id = config.get('upload', {}).get('google', {}).get('spreadsheetId') or get_env('GOOGLE_SHEETS_SPREADSHEET_ID')
+        worksheet_name = config.get('upload', {}).get('google', {}).get('sheetName') or 'SYSTEM FUEL TRACKER'
+        
+        if spreadsheet_id:
+            uploader = GoogleSheetsUploader(spreadsheet_id=spreadsheet_id, worksheet_name=worksheet_name)
+            worksheet = uploader.worksheet
+            row_count = worksheet.row_count - 1  # Exclude header
+            if row_count > 0:
+                worksheet.delete_rows(2, worksheet.row_count)
+            
+            log_admin_action('clear_sheets', f"Deleted {row_count} records from Google Sheets")
+            return {'status': 'success', 'message': f'Deleted {row_count} records from Google Sheets'}
+        else:
+            return {'status': 'error', 'message': 'Google Sheets not configured'}
+    except Exception as e:
+        log_admin_action('clear_sheets', str(e), 'failed')
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.post("/api/admin/fleet/add")
+async def admin_add_vehicle(request: Request):
+    """Add a vehicle to the fleet"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    data = await request.json()
+    plate = data.get('plate', '').upper().replace(' ', '')
+    
+    if not plate:
+        return {'status': 'error', 'message': 'Plate number required'}
+    
+    # Load current fleet
+    fleet = set(load_fleet())
+    
+    if plate in fleet:
+        return {'status': 'exists', 'message': f'{plate} already in fleet'}
+    
+    fleet.add(plate)
+    
+    if save_fleet_to_processor(fleet):
+        log_admin_action('add_vehicle', plate)
+        return {'status': 'added', 'message': f'{plate} added to fleet'}
+    else:
+        return {'status': 'error', 'message': 'Failed to save fleet'}
+
+
+@app.post("/api/admin/fleet/remove")
+async def admin_remove_vehicle(request: Request):
+    """Remove a vehicle from the fleet"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    data = await request.json()
+    plate = data.get('plate', '').upper().replace(' ', '')
+    
+    if not plate:
+        return {'status': 'error', 'message': 'Plate number required'}
+    
+    # Load current fleet
+    fleet = set(load_fleet())
+    
+    if plate not in fleet:
+        return {'status': 'not_found', 'message': f'{plate} not in fleet'}
+    
+    fleet.discard(plate)
+    
+    if save_fleet_to_processor(fleet):
+        log_admin_action('remove_vehicle', plate)
+        return {'status': 'removed', 'message': f'{plate} removed from fleet'}
+    else:
+        return {'status': 'error', 'message': 'Failed to save fleet'}
+
+
+@app.post("/api/admin/clear-cooldowns")
+async def admin_clear_cooldowns(request: Request):
+    """Clear all car cooldowns"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    cooldowns_path = DATA_DIR / 'car_last_update.json'
+    
+    try:
+        if cooldowns_path.exists():
+            data = safe_json_load(cooldowns_path, {})
+            count = len(data)
+            safe_json_save(cooldowns_path, {})
+            log_admin_action('clear_cooldowns', f"Cleared {count} cooldowns")
+            return {'status': 'success', 'message': f'Cleared {count} cooldowns'}
+        return {'status': 'success', 'message': 'No cooldowns to clear'}
+    except Exception as e:
+        log_admin_action('clear_cooldowns', str(e), 'failed')
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.post("/api/admin/clear-pending")
+async def admin_clear_pending(request: Request):
+    """Clear all pending approvals"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    pending_path = DATA_DIR / 'pending_approvals.json'
+    
+    try:
+        if pending_path.exists():
+            data = safe_json_load(pending_path, [])
+            count = len(data) if isinstance(data, list) else 0
+            safe_json_save(pending_path, [])
+            log_admin_action('clear_pending', f"Cleared {count} pending approvals")
+            return {'status': 'success', 'message': f'Cleared {count} pending approvals'}
+        return {'status': 'success', 'message': 'No pending approvals to clear'}
+    except Exception as e:
+        log_admin_action('clear_pending', str(e), 'failed')
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.post("/api/admin/clear-messages")
+async def admin_clear_messages(request: Request):
+    """Clear processed and raw message cache"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    files_removed = 0
+    
+    try:
+        for folder in ['processed', 'raw_messages']:
+            folder_path = DATA_DIR / folder
+            if folder_path.exists():
+                for f in folder_path.glob('*.json'):
+                    try:
+                        f.unlink()
+                        files_removed += 1
+                    except:
+                        pass
+        
+        log_admin_action('clear_messages', f"Removed {files_removed} message files")
+        return {'status': 'success', 'files_removed': files_removed}
+    except Exception as e:
+        log_admin_action('clear_messages', str(e), 'failed')
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.post("/api/admin/audit-log")
+async def admin_get_audit_log(request: Request):
+    """Get audit log (requires separate password)"""
+    token = request.cookies.get("admin_session")
+    if not verify_admin_session(token):
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    data = await request.json()
+    password = data.get('password', '')
+    
+    if password != AUDIT_LOG_PASSWORD:
+        return JSONResponse(status_code=403, content={'error': 'Invalid audit log password'})
+    
+    logs = safe_json_load(AUDIT_LOG_PATH, [])
+    return {'logs': logs}
+
+
+# ============================================================================
+# END ADMIN PANEL ROUTES
+# ============================================================================
 
 
 @app.get("/api/records")

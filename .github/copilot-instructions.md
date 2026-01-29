@@ -2,43 +2,58 @@
 
 ## Project Overview
 
-A **dual-language automation tool** that captures fueling reports from a WhatsApp group and exports them to Excel with real-time validation, admin approval workflows, and comprehensive reporting.
+A **Python-based automation tool** that captures fueling reports from a WhatsApp group via Evolution API and stores them in MySQL + Google Sheets with real-time validation, admin approval workflows, and a web dashboard.
 
 **Stack:**
-- **Node.js 18+** - WhatsApp connectivity (whatsapp-web.js), admin commands, edit detection
-- **Python 3.9+** - Message parsing, validation, Excel export, summary generation
-- **JSON files** - Message queue, approvals, cooldown tracking
+- **Python 3.9+** - All backend logic (FastAPI, validation, webhooks)
+- **Evolution API** - WhatsApp connectivity via Docker (localhost:8080)
+- **MySQL** - Primary data storage
+- **Google Sheets** - Backup storage and reporting
+- **FastAPI** - Web dashboard and webhook receiver
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                 │
-│  WhatsApp        Node.js          JSON Files        Python         WhatsApp    │
-│  ┌───────┐      ┌────────┐       ┌──────────┐     ┌─────────┐     ┌────────┐   │
-│  │ Group │─────►│listener│──────►│raw_msgs  │────►│processor│────►│Confirm │   │
-│  │Message│      │  .js   │       │approvals │     │   .py   │     │ /Error │   │
-│  └───────┘      └────────┘       │cooldown  │     └─────────┘     └────────┘   │
-│       │              │           └──────────┘          │                        │
-│       │         Admin Commands                    Validations:                  │
-│       │         !status !summary                  - Required fields            │
-│       │         !car !pending                     - Fleet whitelist            │
-│       │         !approve !reject                  - 12h car cooldown           │
-│       │         !add !remove !list                - Odometer check             │
-│       │                                                                         │
-│       └─────── Edit Detection ─────────────────────────────────────────────────┘
-│                (within 10 min)
+│  WhatsApp      Evolution API       Python Backend         Storage               │
+│  ┌───────┐     ┌───────────┐      ┌─────────────┐      ┌──────────┐            │
+│  │ User  │────►│  Docker   │─────►│  FastAPI    │─────►│  MySQL   │            │
+│  │Message│     │ localhost │      │  :8000      │      │  (primary)│            │
+│  └───────┘     │   :8080   │      └─────────────┘      └──────────┘            │
+│                └───────────┘             │                   │                  │
+│                     │                    │              ┌──────────┐            │
+│                  Webhook              Validates         │  Google  │            │
+│               /webhook/evolution      Processes         │  Sheets  │            │
+│                     │                 Replies           │ (backup) │            │
+│                     ▼                    │              └──────────┘            │
+│              ┌─────────────┐             │                                      │
+│              │webhook_     │◄────────────┘                                      │
+│              │receiver.py  │                                                    │
+│              └─────────────┘                                                    │
+│                     │                                                           │
+│              ┌─────────────┐     ┌─────────────┐     ┌─────────────┐           │
+│              │ processor   │     │ evolution   │     │    web.py   │           │
+│              │ validation  │     │  _api.py    │     │  dashboard  │           │
+│              └─────────────┘     └─────────────┘     └─────────────┘           │
+│                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Key Files
 
-| File | Language | Lines | Purpose |
-|------|----------|-------|---------|
-| `node/listener.js` | JavaScript | ~1500 | WhatsApp connection, admin commands, edit detection, approval management |
-| `python/processor.py` | Python | ~1100 | Message parsing, validation, cooldown checks, Excel export |
-| `python/weekly_summary.py` | Python | ~850 | Summary generation (daily/weekly/monthly/vehicle) |
-| `config.json` | JSON | - | Configuration (group name, output paths) |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `python/evolution_api.py` | ~700 | Evolution API client - messaging, instance management, webhooks, message history |
+| `python/webhook_receiver.py` | ~850 | FastAPI router - receives webhooks, processes messages, admin commands |
+| `python/processor.py` | ~1100 | Message parsing, validation, cooldown checks |
+| `python/message_sync.py` | ~400 | Offline message recovery, deduplication, fallback storage |
+| `python/web.py` | ~1400 | FastAPI dashboard - records, analytics, approvals, fleet |
+| `python/db.py` | ~200 | MySQL database helper (SQLAlchemy) |
+| `python/google_sheets_uploader.py` | ~300 | Google Sheets integration |
+| `python/weekly_summary.py` | ~850 | Summary generation (daily/weekly/monthly/vehicle) |
+| `python/startup.py` | ~450 | Startup script - initializes all components, syncs missed messages |
+| `config.json` | - | Configuration (group name, Evolution settings) |
 
 ## Message Format
 
@@ -90,8 +105,7 @@ def check_car_cooldown(car_plate: str, record: Dict) -> Tuple[bool, Optional[str
     if last_update:
         hours_since = (datetime.now() - last_time).total_seconds() / 3600
         if hours_since < CAR_COOLDOWN_HOURS:
-            # Requires admin approval with detailed comparison
-            return False, approval_id
+            return False, approval_id  # Requires admin approval
     return True, None
 ```
 
@@ -100,164 +114,271 @@ New reading must be greater than previous for the same car.
 
 ## Admin Commands
 
-| Command | Handler | Description |
-|---------|---------|-------------|
-| `!status` | `getSystemStatus()` | System health check |
-| `!summary [period]` | `buildPythonCommand(weekly_summary.py)` | Generate summary (daily/weekly/monthly) |
-| `!car PLATE [days]` | `buildPythonCommand(weekly_summary.py, '--car')` | Vehicle-specific summary |
-| `!pending` | `getPendingApprovals()` | View pending approval requests |
-| `!approve ID` | `processApproval(id, true)` | Approve pending record |
-| `!reject ID` | `processApproval(id, false)` | Reject pending record |
-| `!add PLATE` | `addVehicleToFleet()` | Add vehicle to ALLOWED_PLATES |
-| `!remove PLATE` | `removeVehicleFromFleet()` | Remove from ALLOWED_PLATES |
-| `!list` | `getFleetList()` | List all fleet vehicles |
-| `!help` | Direct response | Show all admin commands |
-| `!how` | `getFuelUpdateGuide()` | Public guide for drivers |
+| Command | Description |
+|---------|-------------|
+| `!status` | System health check (DB, Sheets, Evolution API) |
+| `!summary [period]` | Generate summary (daily/weekly/monthly) |
+| `!car PLATE [days]` | Vehicle-specific summary |
+| `!pending` | View pending approval requests |
+| `!approve ID` | Approve pending record |
+| `!reject ID` | Reject pending record |
+| `!add PLATE` | Add vehicle to ALLOWED_PLATES |
+| `!remove PLATE` | Remove from ALLOWED_PLATES |
+| `!list` | List all fleet vehicles |
+| `!help` | Show all admin commands |
+| `!how` | Public guide for drivers |
 
-## Approval System
+## Evolution API Integration
 
-### Pending Approval Structure (`data/pending_approvals.json`)
-```json
-{
-  "id": "abc12345",
-  "type": "car_cooldown",  // or "edit"
-  "timestamp": "2026-01-08T10:30:00",
-  "record": { "driver": "JOHN", "car": "KCA542Q", ... },
-  "original_record": { ... },
-  "reason": "Same car fueled 2.5h ago",
-  "status": "pending",  // pending, approved, rejected
-  "notified": false
-}
+### Configuration (.env)
+```bash
+EVOLUTION_API_URL=http://localhost:8080
+EVOLUTION_API_KEY=B6D711FCDE4D4FD5936544120E713976
+EVOLUTION_INSTANCE_NAME=fuel-extractor
 ```
 
-### Car Last Update Tracking (`data/car_last_update.json`)
-```json
-{
-  "KCA542Q": {
-    "timestamp": "2026-01-08T08:00:00",
-    "driver": "JOHN",
-    "liters": 25.0,
-    "amount": 10000,
-    "odometer": 45230,
-    "type": "DIESEL",
-    "department": "LOGISTICS"
-  }
-}
+### Key Classes (evolution_api.py)
+
+```python
+class EvolutionAPI:
+    """Evolution API client for WhatsApp integration"""
+    
+    async def send_text(self, to: str, message: str) -> dict
+    async def send_to_group(self, group_jid: str, message: str) -> dict
+    async def health_check(self) -> dict
+    async def get_instance_status(self) -> dict
+    async def create_instance(self, webhook_url: str) -> dict
+    async def set_webhook(self, webhook_url: str, events: list) -> dict
+    async def fetch_messages_async(self, chat_id: str, count: int = 50) -> List[Dict]
 ```
 
-## Edit Detection (listener.js)
+### Webhook Receiver (webhook_receiver.py)
 
-Key fields tracked for edits within 10 minutes:
-- DRIVER, CAR, DEPARTMENT, ODOMETER, LITERS, AMOUNT, TYPE
-
-```javascript
-// Check if key fields changed
-const keyFieldsChanged = [];
-if (oldFields.driver !== newFields.driver) keyFieldsChanged.push('DRIVER');
-if (oldFields.car !== newFields.car) keyFieldsChanged.push('CAR');
-if (oldFields.department !== newFields.department) keyFieldsChanged.push('DEPARTMENT');
-if (oldFields.odometer !== newFields.odometer) keyFieldsChanged.push('ODOMETER');
-if (oldFields.liters !== newFields.liters) keyFieldsChanged.push('LITERS');
-if (oldFields.amount !== newFields.amount) keyFieldsChanged.push('AMOUNT');
-if (oldFields.type !== newFields.type) keyFieldsChanged.push('TYPE');
+```python
+@router.post("/webhook/evolution")
+async def evolution_webhook(request: Request):
+    """Receive Evolution API webhook events"""
+    # Handles: MESSAGES_UPSERT, CONNECTION_UPDATE, QRCODE_UPDATED
+    # Includes message deduplication via MessageSyncManager
 ```
 
-## Summary Types (weekly_summary.py)
+### Message Sync (message_sync.py)
 
-| Type | Days | Format Function |
-|------|------|-----------------|
-| Daily | 1 | `format_daily_summary()` |
-| Weekly | 7 | `format_weekly_summary()` |
-| Monthly | 30 | `format_monthly_summary()` |
-| Vehicle | configurable | `get_car_summary()` |
+```python
+class MessageSyncManager:
+    """Manages message deduplication and offline recovery"""
+    def get_last_processed_time() -> Optional[datetime]
+    def update_last_processed_time(timestamp: Optional[datetime] = None)
+    def is_message_processed(message_id: str) -> bool
+    def mark_message_processed(message_id: str, data: Dict, folder: str = 'raw')
 
-## Key Functions
+async def fetch_missed_messages(
+    evolution_api, group_jid: str, process_callback,
+    max_messages: int = 50, max_offline_hours: int = 24
+) -> Dict
 
-### listener.js
-- `isFuelReport(body)` - Check if message starts with "FUEL UPDATE"
-- `parseFuelFields(body)` - Extract fields for edit comparison
-- `handleAdminCommand(msg, body)` - Route admin commands
-- `isGroupAdmin(msg)` - Check if sender is group admin
-- `getPendingApprovals()` - Get pending approval list
-- `processApproval(id, approve)` - Approve/reject with record creation
-- `buildPythonCommand(script, ...args)` - Cross-platform Python execution
-- `getCondaPaths()` - Auto-discover conda installation
+def load_records_with_fallback() -> Tuple[List[Dict], str]  # Sheets → DB → Excel
+async def save_record_with_fallback(record: Dict) -> Tuple[bool, str]  # DB → Sheets → JSON
+```
 
-### processor.py
-- `FuelReportParser.parse(body)` - Extract all fields from message
-- `check_car_cooldown(plate, record)` - 12-hour cooldown validation
-- `save_pending_approval(type, record, original, reason)` - Queue for approval
-- `update_car_last_update(plate, record)` - Update cooldown tracking
-- `ExcelExporter.append_record(record)` - Add row to Excel
+## Offline Message Recovery
 
-### weekly_summary.py
-- `calculate_statistics(records, days)` - Compute stats with breakdowns
-- `format_daily_summary(stats)` - Today's focused report
-- `format_weekly_summary(stats)` - Week overview with top performers
-- `format_monthly_summary(stats)` - Executive summary with percentages
-- `get_car_summary(plate, days)` - Vehicle-specific analysis
+When the system starts up, it automatically:
+1. Checks `data/last_processed.json` for the shutdown timestamp
+2. Calculates time elapsed since last sync
+3. Fetches up to 50 recent messages from the target group via Evolution API
+4. Filters messages newer than the last sync timestamp
+5. Processes any fuel reports that weren't processed (using deduplication)
+6. Updates the last processed timestamp
 
-## Data Flow
+### Shutdown Handler
+On graceful shutdown (SIGINT/SIGTERM), the system saves the current timestamp to `data/last_processed.json`. This allows accurate recovery when the system restarts.
 
-1. **Message received** → `message_create` event
-2. **Fuel report check** → `isFuelReport()` 
-3. **Save to JSON** → `data/raw_messages/msg_*.json`
-4. **Processor validates** (every 10s):
-   - Required fields
-   - Fleet whitelist
-   - **12-hour cooldown** (primary protection)
-   - Odometer validation
-5. **If valid** → Excel + confirmation
-6. **If cooldown violation** → Pending approval + detailed notification
-7. **If edit detected** (within 10 min) → Pending approval + comparison
+### Deduplication
+Message IDs are tracked in three folders:
+- `data/raw_messages/` - All received messages
+- `data/processed/` - Successfully processed fuel reports
+- `data/errors/` - Messages that failed processing
 
-## Coding Conventions
+## Database Fallback Logic
 
-### JavaScript (Node.js)
-- ES6+ syntax, async/await
-- `path.join()` for all file paths
-- Log with markers: [OK], [ERROR], [MSG], [SYNC], [SAVED], [MSG], [DENIED], [PENDING], [EDIT]
-- Auto-discover conda with `getCondaPaths()`
+### Reading Records (Priority: Sheets → DB → Excel)
+```python
+records, source = load_records_with_fallback()
+# Tries: Google Sheets → MySQL → Excel files → Processed JSON
+```
 
-### Python
-- Python 3.9+ with type hints
-- `pathlib.Path` for file operations
-- `logging` with RotatingFileHandler
-- Move processed files (audit trail)
+### Saving Records (Multi-destination)
+```python
+success, destinations = await save_record_with_fallback(record)
+# Saves to: Database + Google Sheets + Local JSON (backup)
+```
+
+## Data Storage
+
+### MySQL (Primary)
+```python
+# Table: fuel_records
+Column('id', Integer, primary_key=True)
+Column('created_at', DateTime)
+Column('datetime', String(32))
+Column('department', String(64))
+Column('driver', String(128))
+Column('car', String(32), index=True)
+Column('liters', Float)
+Column('amount', Float)
+Column('type', String(32))
+Column('odometer', Integer)
+Column('sender', String(128))
+Column('raw_message', Text)
+```
+
+### Google Sheets (Backup)
+- Spreadsheet ID: `1gAq2TUBWPIKUAXRcHYeeq85ltktWgXUoe9QDDkRYSQo`
+- Worksheet: `SYSTEM FUEL TRACKER`
+
+## Web Dashboard Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/` | GET | Dashboard with metrics |
+| `/records` | GET | Records table with search/filter |
+| `/approvals` | GET | Pending approvals management |
+| `/fleet` | GET | Fleet vehicle management |
+| `/analytics` | GET | Charts and analytics |
+| `/api/health` | GET | Health check (includes Evolution API status) |
+| `/api/evolution/status` | GET | Detailed Evolution API status |
+| `/api/evolution/send` | POST | Send WhatsApp message |
+| `/api/evolution/initialize` | POST | Initialize Evolution instance |
+| `/webhook/evolution` | POST | Evolution API webhook receiver |
+| `/webhook/evolution/sync` | POST | Manual trigger for missed message sync |
+| `/webhook/evolution/health` | GET | Webhook health with sync status |
 
 ## Configuration (config.json)
 
 ```json
 {
-  "whatsapp": {
-    "phoneNumber": "",
-    "groupName": "Fuel Reports"
-  },
-  "output": {
-    "excelFolder": "./data/output",
-    "excelFileName": "fuel_records.xlsx"
-  },
-  "schedule": {
-    "processingIntervalSeconds": 10
-  }
+    "whatsapp": {
+        "phoneNumber": "254108661898",
+        "groupName": "Fuel Reports",
+        "groupJid": "120363304885288170@g.us"
+    },
+    "evolution": {
+        "apiUrl": "http://localhost:8080",
+        "apiKey": "B6D711FCDE4D4FD5936544120E713976",
+        "instanceName": "fuel-extractor",
+        "webhookUrl": "http://localhost:8000/webhook/evolution"
+    },
+    "upload": {
+        "toGoogleSheets": true,
+        "toDatabase": true
+    }
 }
 ```
 
-## Timeouts (processor.py)
+## Environment Variables (.env)
+
+```bash
+# Database (MySQL)
+DB_HOST=localhost
+DB_NAME=logistics_department
+DB_USER=root
+DB_PASSWORD=your_password
+DB_PORT=3306
+DB_DRIVER=mysql+pymysql
+
+# Google Sheets
+GOOGLE_SHEETS_SPREADSHEET_ID=your_spreadsheet_id
+
+# Evolution API
+EVOLUTION_API_URL=http://localhost:8080
+EVOLUTION_API_KEY=your_api_key
+EVOLUTION_INSTANCE_NAME=fuel-extractor
+
+# Web Server
+WEB_HOST=0.0.0.0
+WEB_PORT=8000
+```
+
+## Running the Application
+
+```bash
+# Start everything (recommended)
+./start.sh
+
+# Or manually
+python -m python.startup
+
+# Or just the web server
+uvicorn python.web:app --host 0.0.0.0 --port 8000
+```
+
+## Key Functions
+
+### webhook_receiver.py
+- `evolution_webhook()` - Main webhook handler
+- `process_fuel_report()` - Parse and validate fuel messages
+- `process_admin_command()` - Handle admin commands
+- `send_reply()` - Send WhatsApp response via Evolution API
+
+### processor.py
+- `FuelReportParser.parse(body)` - Extract all fields from message
+- `check_car_cooldown(plate, record)` - 12-hour cooldown validation
+- `normalize_plate(plate)` - Standardize plate format
+- `ALLOWED_PLATES` - Set of valid fleet vehicles
+
+### evolution_api.py
+- `EvolutionAPI.send_text()` - Send message to number
+- `EvolutionAPI.send_to_group()` - Send message to group
+- `EvolutionAPI.health_check()` - Check API health
+- `get_evolution_api()` - Get configured API instance
+
+### db.py
+- `Database.insert_fuel_record()` - Save record to MySQL
+- `Database.get_all_records()` - Retrieve records with filters
+- `Database.get_record_count()` - Count total records
+
+## Coding Conventions
+
+### Python
+- Python 3.9+ with type hints
+- `async/await` for Evolution API calls
+- `pathlib.Path` for file operations
+- `logging` with proper levels
+- FastAPI for web and webhooks
+
+### Logging Markers
+- `[OK]` - Success
+- `[ERROR]` - Error
+- `[WEBHOOK]` - Webhook received
+- `[FUEL]` - Fuel report processed
+- `[ADMIN]` - Admin command
+- `[PENDING]` - Pending approval created
+- `[DENIED]` - Validation failed
+
+## Dependencies (requirements.txt)
+
+```
+fastapi>=0.104.0
+uvicorn>=0.24.0
+httpx>=0.25.0          # Evolution API client
+SQLAlchemy>=2.0.0
+pymysql>=1.1.0         # MySQL driver
+gspread>=6.0.0         # Google Sheets
+pandas>=2.0.0
+openpyxl>=3.1.2
+python-dotenv>=1.0.0
+```
+
+## Docker Services (External)
+
+The Evolution API runs in Docker (managed separately):
+- **Evolution API**: `localhost:8080`
+- **API Key**: Configured in `.env`
+
+## Timeouts
 
 ```python
 CAR_COOLDOWN_HOURS = 12           # Same car can't fuel within 12 hours
 EDIT_APPROVAL_TIMEOUT_MINUTES = 10  # Edit detection window
 ```
-
-## Dependencies
-
-### Node.js
-- `whatsapp-web.js` - WhatsApp Web client
-- `qrcode-terminal` - QR code display
-- `chokidar` - Config file watching
-
-### Python
-- `openpyxl` - Excel file handling
-- `pandas` - Data manipulation
-- `schedule` - Job scheduling

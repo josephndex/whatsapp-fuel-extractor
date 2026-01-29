@@ -1,7 +1,19 @@
 {
   "whatsapp": {
     "phoneNumber": "254108661898",
-    "groupName": "Fuel Reports"
+    "groupName": "Fuel Reports",
+    "groupJid": "120363406542454150@g.us"
+  },
+  "evolution": {
+    "apiUrl": "http://localhost:8080",
+    "apiKey": "B6D711FCDE4D4FD5936544120E713976",
+    "instanceName": "fuel-extractor",
+    "webhookUrl": "http://localhost:8000/webhook/evolution",
+    "webhookEvents": [
+      "MESSAGES_UPSERT",
+      "CONNECTION_UPDATE",
+      "QRCODE_UPDATED"
+    ]
   },
   "output": {
     "excelFolder": "./data/output",
@@ -32,8 +44,8 @@
     "toGoogleSheets": true,
     "toDatabase": true,
     "google": {
-      "sheetName": "SYSTEM FUEL RECORDS",
-      "spreadsheetId": "1FcXD5ILQnE4U3ljAzLW0R9LzyDZaTD21OckoJ4BtfxE"
+      "sheetName": "SYSTEM FUEL TRACKER",
+      "spreadsheetId": "1gAq2TUBWPIKUAXRcHYeeq85ltktWgXUoe9QDDkRYSQo"
     },
     "database": {
       "tableName": "fuel_records"

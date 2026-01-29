@@ -1,45 +1,28 @@
-# Node.js
-node_modules/
-npm-debug.log*
-.wwebjs_cache/
-
-# WhatsApp Session (SENSITIVE)
-data/session/
-
-# Data files (generated)
-data/raw_messages/*.json
-data/processed/*.json
-data/errors/*.json
-data/output/*.xlsx
-data/confirmations.json
-data/validation_errors.json
-data/weekly_summary.json
-
-# Python
+# Python cache only
 __pycache__/
 *.py[cod]
 *.pyc
+
+# Virtual environments
 .venv/
 venv/
-
-# Environment & Credentials (SENSITIVE)
-.env
-.env.local
-google_credentials.json
-credentials.json
-token.json
-service-account*.json
-secrets.json
 
 # IDE
 .vscode/
 .idea/
 *.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs (runtime generated)
 *.log
-logs/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Node modules (if any)
+node_modules/
