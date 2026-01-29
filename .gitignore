@@ -1,4 +1,11 @@
-# Python cache only
+# ================================================
+# WhatsApp Fuel Extractor - Git Ignore
+# ================================================
+# ⚠️  SECURITY NOTE: This repo includes credentials
+#     for private deployment. Keep repo PRIVATE!
+# ================================================
+
+# Python cache
 __pycache__/
 *.py[cod]
 *.pyc
@@ -26,3 +33,10 @@ Thumbs.db
 
 # Node modules (if any)
 node_modules/
+
+# ================================================
+# INCLUDED IN REPO (for deployment):
+# - .env                    (environment variables)
+# - google_credentials.json (Google Sheets API)
+# - config.json             (app configuration)
+# ================================================

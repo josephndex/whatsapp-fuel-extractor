@@ -1,0 +1,54 @@
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+*.temp
+
+# Development files
+.env.local
+*.md
+!README.md
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Docker files (no need to copy into image)
+docker-compose*.yml
+Dockerfile*
+
+# Backup and old files
+*.backup
+*.old
+backups/

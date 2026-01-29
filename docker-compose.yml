@@ -1,0 +1,83 @@
+# WhatsApp Fuel Extractor - Docker Compose
+# Production deployment connecting to external Evolution API
+#
+# Architecture:
+#   - Evolution API runs separately at wa.firesideafrica.cloud
+#   - This app connects to it using instance name "fuel-extractor"
+#   - You can create more instances on the same Evolution API for other projects
+#
+# Usage:
+#   docker-compose up -d           # Start the fuel extractor
+#   docker-compose logs -f         # View logs
+#   docker-compose down            # Stop
+#   docker-compose build --no-cache && docker-compose up -d  # Rebuild
+
+
+services:
+  # ===========================================
+  # WhatsApp Fuel Extractor (Main Application)
+  # ===========================================
+  fuel-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fuel-extractor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Database (via Tailscale)
+      - DB_HOST=${DB_HOST:-100.83.80.26}
+      - DB_NAME=${DB_NAME:-logistics_department}
+      - DB_USER=${DB_USER:-RITA}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_DRIVER=${DB_DRIVER:-mysql+pymysql}
+      # Google Sheets
+      - GOOGLE_SHEETS_SPREADSHEET_ID=${GOOGLE_SHEETS_SPREADSHEET_ID}
+      # Evolution API (EXTERNAL - runs separately)
+      # Points to your existing Evolution API at wa.firesideafrica.cloud
+      - EVOLUTION_API_URL=${EVOLUTION_API_URL:-https://wa.firesideafrica.cloud}
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
+      - EVOLUTION_INSTANCE_NAME=${EVOLUTION_INSTANCE_NAME:-fuel-extractor}
+      # Web server
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8000
+      # Timezone
+      - TZ=Africa/Nairobi
+    volumes:
+      # Persist data directory
+      - ./data:/app/data
+      # Mount Google credentials
+      - ./google_credentials.json:/app/google_credentials.json:ro
+      # Mount config
+      - ./config.json:/app/config.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      # Traefik/Coolify labels for reverse proxy with SSL
+      - "traefik.enable=true"
+      - "traefik.http.routers.fuel.rule=Host(`fuel.firesideafrica.cloud`)"
+      - "traefik.http.routers.fuel.entrypoints=websecure"
+      - "traefik.http.routers.fuel.tls.certresolver=letsencrypt"
+      - "traefik.http.services.fuel.loadbalancer.server.port=8000"
+
+# ===========================================
+# NOTE: Evolution API runs SEPARATELY
+# ===========================================
+# Your Evolution API at wa.firesideafrica.cloud can host multiple instances:
+#
+#   Instance: "fuel-extractor"  ← This project
+#   Instance: "sales-bot"       ← Another project
+#   Instance: "support"         ← Another project
+#
+# To create a new instance on your Evolution API:
+#   curl -X POST "https://wa.firesideafrica.cloud/instance/create" \
+#     -H "apikey: YOUR_API_KEY" \
+#     -H "Content-Type: application/json" \
+#     -d '{"instanceName": "new-project", "qrcode": true}'
+# ===========================================

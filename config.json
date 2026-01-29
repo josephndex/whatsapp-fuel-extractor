@@ -5,10 +5,10 @@
     "groupJid": "120363406542454150@g.us"
   },
   "evolution": {
-    "apiUrl": "http://localhost:8080",
+    "apiUrl": "https://wa.firesideafrica.cloud",
     "apiKey": "B6D711FCDE4D4FD5936544120E713976",
     "instanceName": "fuel-extractor",
-    "webhookUrl": "http://localhost:8000/webhook/evolution",
+    "webhookUrl": "https://fuel.firesideafrica.cloud/webhook/evolution",
     "webhookEvents": [
       "MESSAGES_UPSERT",
       "CONNECTION_UPDATE",
