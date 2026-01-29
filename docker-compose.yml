@@ -1,0 +1,180 @@
+# WhatsApp Fuel Extractor - Complete Stack
+# Includes: Fuel Extractor App + Evolution API + Redis + PostgreSQL (for Evolution)
+
+version: '3.8'
+
+services:
+  # ===========================================
+  # FUEL EXTRACTOR WEB APP
+  # ===========================================
+  fuel-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fuel-extractor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Database (External MySQL - your remote DB)
+      - DB_HOST=${DB_HOST:-100.83.80.26}
+      - DB_NAME=${DB_NAME:-logistics_department}
+      - DB_USER=${DB_USER:-RITA}
+      - DB_PASSWORD=${DB_PASSWORD:-RITANDEX101/}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_DRIVER=${DB_DRIVER:-mysql+pymysql}
+      # Google Sheets
+      - GOOGLE_SHEETS_SPREADSHEET_ID=${GOOGLE_SHEETS_SPREADSHEET_ID:-1gAq2TUBWPIKUAXRcHYeeq85ltktWgXUoe9QDDkRYSQo}
+      # Evolution API (connects to evolution service below)
+      - EVOLUTION_API_URL=http://evolution-api:8080
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-B6D711FCDE4D4FD5936544120E713976}
+      - EVOLUTION_INSTANCE_NAME=${EVOLUTION_INSTANCE_NAME:-fuel-extractor}
+      # Web Server
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8000
+    volumes:
+      - ./data:/app/data
+      - ./google_credentials.json:/app/google_credentials.json:ro
+      - ./config.json:/app/config.json
+    depends_on:
+      evolution-api:
+        condition: service_healthy
+    networks:
+      - fuel-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fuel.rule=Host(`fuel.firesideafrica.cloud`)"
+      - "traefik.http.routers.fuel.entrypoints=websecure"
+      - "traefik.http.routers.fuel.tls.certresolver=letsencrypt"
+      - "traefik.http.services.fuel.loadbalancer.server.port=8000"
+
+  # ===========================================
+  # EVOLUTION API (WhatsApp)
+  # ===========================================
+  evolution-api:
+    image: atendai/evolution-api:v2.1.1
+    container_name: evolution-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Server
+      - SERVER_URL=https://wa.firesideafrica.cloud
+      - SERVER_TYPE=http
+      - SERVER_PORT=8080
+      # CORS
+      - CORS_ORIGIN=*
+      - CORS_METHODS=GET,POST,PUT,DELETE
+      - CORS_CREDENTIALS=true
+      # Logs
+      - LOG_LEVEL=ERROR
+      - LOG_COLOR=true
+      - LOG_BAILEYS=error
+      # Database (PostgreSQL)
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://postgres:evolution_pass@evolution-db:5432/evolution
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_api
+      # Redis
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://evolution-redis:6379/0
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=true
+      - CACHE_LOCAL_ENABLED=false
+      # Authentication
+      - AUTHENTICATION_TYPE=apikey
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-B6D711FCDE4D4FD5936544120E713976}
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      # Instance
+      - DEL_INSTANCE=false
+      - DEL_TEMP_INSTANCES=true
+      # Webhook Global (optional)
+      - WEBHOOK_GLOBAL_ENABLED=false
+      - WEBHOOK_GLOBAL_URL=http://fuel-extractor:8000/webhook/evolution
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
+      # QR Code
+      - QRCODE_LIMIT=30
+      - QRCODE_COLOR=#000000
+      # Chatwoot (disabled)
+      - CHATWOOT_ENABLED=false
+      # OpenAI (disabled)
+      - OPENAI_ENABLED=false
+      # S3 (disabled)
+      - S3_ENABLED=false
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
+    depends_on:
+      evolution-db:
+        condition: service_healthy
+      evolution-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - fuel-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.evolution.rule=Host(`wa.firesideafrica.cloud`)"
+      - "traefik.http.routers.evolution.entrypoints=websecure"
+      - "traefik.http.routers.evolution.tls.certresolver=letsencrypt"
+      - "traefik.http.services.evolution.loadbalancer.server.port=8080"
+
+  # ===========================================
+  # POSTGRESQL (for Evolution API)
+  # ===========================================
+  evolution-db:
+    image: postgres:15-alpine
+    container_name: evolution-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=evolution_pass
+      - POSTGRES_DB=evolution
+    volumes:
+      - evolution_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fuel-network
+
+  # ===========================================
+  # REDIS (for Evolution API caching)
+  # ===========================================
+  evolution-redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - evolution_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fuel-network
+
+# ===========================================
+# NETWORKS
+# ===========================================
+networks:
+  fuel-network:
+    driver: bridge
+
+# ===========================================
+# VOLUMES
+# ===========================================
+volumes:
+  evolution_instances:
+  evolution_store:
+  evolution_postgres_data:
+  evolution_redis_data:

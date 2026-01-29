@@ -1,0 +1,59 @@
+{
+  "whatsapp": {
+    "phoneNumber": "254108661898",
+    "groupName": "Fuel Reports",
+    "groupJid": "120363406542454150@g.us"
+  },
+  "evolution": {
+    "apiUrl": "http://evolution-api:8080",
+    "apiKey": "B6D711FCDE4D4FD5936544120E713976",
+    "instanceName": "fuel-extractor",
+    "webhookUrl": "https://fuel.firesideafrica.cloud/webhook/evolution",
+    "webhookEvents": [
+      "MESSAGES_UPSERT",
+      "CONNECTION_UPDATE",
+      "QRCODE_UPDATED"
+    ]
+  },
+  "output": {
+    "excelFolder": "./data/output",
+    "excelFileName": "fuel_records.xlsx"
+  },
+  "schedule": {
+    "processingIntervalSeconds": 10
+  },
+  "parsing": {
+    "fuelTypes": [
+      "DIESEL",
+      "PETROL",
+      "SUPER",
+      "V-POWER",
+      "UNLEADED"
+    ],
+    "requiredFields": [
+      "driver",
+      "car",
+      "liters",
+      "amount",
+      "type",
+      "odometer"
+    ],
+    "strictMode": false
+  },
+  "upload": {
+    "toGoogleSheets": true,
+    "toDatabase": true,
+    "google": {
+      "sheetName": "SYSTEM FUEL TRACKER",
+      "spreadsheetId": "1gAq2TUBWPIKUAXRcHYeeq85ltktWgXUoe9QDDkRYSQo"
+    },
+    "database": {
+      "type": "mysql",
+      "table": "fuel_records"
+    }
+  },
+  "admin": {
+    "password": "Nala2025",
+    "auditLogPassword": "NDERITU101"
+  }
+}
